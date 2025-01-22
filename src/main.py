@@ -52,7 +52,7 @@ def main(cfg) -> None:
         print("CUDA device not found. Running on cpu.")
     elif "mps" in cfg["DEVICE"] and not torch.backends.mps.is_available():
         cfg["DEVICE"] = "cpu"
-        print("CUDA device not found. Running on cpu.")
+        print("MPS device not found. Running on cpu.")
 
     # Define temperature decay parameter as a function of the number of steps
     alpha = np.log(cfg["STOP_TEMP"]) - np.log(cfg["INIT_TEMP"])

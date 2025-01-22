@@ -231,7 +231,7 @@ class CVRP(Problem):
 
         res = torch.flip(result, [1])
         result = torch.zeros_like(res)
-        current_max = torch.zeros(res.shape[0], dtype=res.dtype)
+        current_max = torch.zeros(res.shape[0], dtype=res.dtype).to(self.device)
 
         for i in range(res.shape[1]):
             # Update the current max unless we encounter a 0
@@ -270,7 +270,9 @@ class CVRP(Problem):
         idx2 = a[:, 1]  # Destination indices
 
         # Create a mask for the indices across the batch
-        batch_indices = torch.arange(batch_size).unsqueeze(1)  # [batch_size, 1]
+        batch_indices = (
+            torch.arange(batch_size).unsqueeze(1).to(self.device)
+        )  # [batch_size, 1]
 
         # Create a tensor with combined indices for both positions
         flat_indices1 = batch_indices * pb_size + idx1.unsqueeze(1)
@@ -357,12 +359,18 @@ class CVRP(Problem):
         grp = convert_tensor(agg)
         mask1 = (
             (dem > 0)
-            & (torch.arange(dem.shape[1]).repeat(dem.shape[0], 1) != node)
+            & (
+                torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+                != node
+            )
             & (grp == grp.gather(1, node))
         )
         mask2 = (
             (dem > 0)
-            & (torch.arange(dem.shape[1]).repeat(dem.shape[0], 1) != node)
+            & (
+                torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+                != node
+            )
             & (agg + dem.gather(1, node) - dem - self.capacity <= 0)
             & (agg.gather(1, node) + dem - dem.gather(1, node) - self.capacity <= 0)
         )
