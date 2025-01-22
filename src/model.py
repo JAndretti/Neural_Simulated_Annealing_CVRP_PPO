@@ -132,7 +132,7 @@ class CVRPActor(SAModel):
 
         # Sample c1 at random
         mask = ~(state[:, :, 0] != 0)
-        logits = torch.ones(mask.shape[0], mask.shape[1])
+        logits = torch.ones(mask.shape[0], mask.shape[1]).to(self.generator.device)
         logits[mask] = -float("inf")
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
@@ -142,7 +142,7 @@ class CVRPActor(SAModel):
                 state[:, :, 0].unsqueeze(-1).long(), c1.unsqueeze(-1).long()
             )
         )
-        logits = torch.ones(mask.shape[0], mask.shape[1])
+        logits = torch.ones(mask.shape[0], mask.shape[1]).to(self.generator.device)
         logits[mask] = -float("inf")
         c2, _ = self.sample_from_logits(logits, one_hot=False)
 
