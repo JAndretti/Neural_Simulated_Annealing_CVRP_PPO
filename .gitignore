@@ -1,0 +1,11 @@
+__pycache__/
+
+*/key.txt
+
+.venv/
+
+.DS_store
+
+wandb/
+
+train.sh

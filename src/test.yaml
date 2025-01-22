@@ -1,0 +1,37 @@
+# Model
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20241211_152739_1lik5x0b/"
+EMBEDDING_DIM: 16
+
+# Device
+DEVICE: "cpu"
+
+# seed
+SEED: 124
+
+# Problem
+PROBLEM_DIM: 30
+N_PROBLEMS: 100
+
+# SA
+INNER_STEPS: 1
+# OUTER_STEPS: 40
+METHOD: ppo
+REWARD: immediate
+GAMMA: 0.9
+STOP_TEMP: 0.01
+INIT_TEMP: 1.0
+
+# SA Baseline
+# OUTER_STEPS_BASE: 10000
+STOP_TEMP_BASE: 0.001
+INIT_TEMP_BASE: 100000
+
+# Hill
+HILL: True
+
+# Threading
+N_THREADS: 4
+
+# Visualization
+VISU_DIM: 150
+VISU_STEPS: 40
