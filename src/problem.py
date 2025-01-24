@@ -36,7 +36,7 @@ def greedy_init_batch(demands, capacity):
     clients = torch.stack([row[torch.randperm(row.size(0))] for row in clients])
     clients = torch.cat(
         [
-            torch.zeros(clients.size(0), 1, dtype=clients.dtype),
+            torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=demands.device),
             clients,
         ],
         dim=1,
