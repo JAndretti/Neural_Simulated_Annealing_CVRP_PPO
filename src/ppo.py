@@ -50,8 +50,8 @@ def ppo(
     batch_size = cfg["BATCH_SIZE"]  # Batch size
     n_problems = cfg["N_PROBLEMS"]  # Number of problems
     problem_dim = int(
-        cfg["PROBLEM_DIM"] + (cfg["PROBLEM_DIM"] * 0.20) + 2
-    )  # Problem dimensionality + 2 for first and last 0 + 20% for match padding
+        cfg["PROBLEM_DIM"] + (cfg["PROBLEM_DIM"] * 0.40) + 1
+    )  # Problem dimensionality 40% for match padding +1 to add depot
     device = cfg["DEVICE"]  # Device (CPU or GPU)
 
     actor.train()

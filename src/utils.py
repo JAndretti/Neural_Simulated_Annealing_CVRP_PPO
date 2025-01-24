@@ -1,9 +1,6 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
-
-
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
 
 def extend(tensor: torch.Tensor, dims: int) -> torch.Tensor:
@@ -44,3 +41,27 @@ def convert_tensor(a: torch.Tensor) -> torch.Tensor:
     # Add the last value of each row to indices
     indices = torch.cat((indices, indices[:, -1].unsqueeze(1)), dim=1)
     return indices
+
+
+def plot_CVRP(ax, nodes, x_coords, y_coords, title="Solution"):
+    """Plot the CVRP solution."""
+    zero_indices = [i for i, v in enumerate(nodes) if v == 0]
+    colors = plt.get_cmap(None, len(zero_indices) - 1)
+    for i in range(len(zero_indices) - 1):
+        start = zero_indices[i]
+        end = zero_indices[i + 1]
+
+        segment_x = x_coords[start : end + 1]
+        segment_y = y_coords[start : end + 1]
+        segment_values = nodes[start : end + 1]
+
+        ax.plot(
+            segment_x,
+            segment_y,
+            color=colors(i),
+            marker="o",
+            label=f"Segment {i + 1}",
+        )
+        for x, y, val in zip(segment_x, segment_y, segment_values):
+            ax.text(x, y, str(int(val)), fontsize=9, ha="center", va="bottom")
+    ax.set_title(f"{title} : {list(map(int, nodes))}")

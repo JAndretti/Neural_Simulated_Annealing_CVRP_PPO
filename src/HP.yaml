@@ -2,15 +2,15 @@ PROJECT: "Neural_Simulated_Annealing"
 GROUP: "CVRP"
 
 # Wandb
-LOG: True
+LOG: False
 
 # Device
-DEVICE: "cuda"
+DEVICE: "cpu"
 
 # SA
-INIT_TEMP: 1.0
+INIT_TEMP: 1
 STOP_TEMP: 0.01
-OUTER_STEPS: 100
+OUTER_STEPS: 40
 INNER_STEPS: 1
 
 #Seed

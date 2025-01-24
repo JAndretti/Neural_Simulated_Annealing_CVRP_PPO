@@ -119,6 +119,25 @@ def main(cfg) -> None:
                     "Primal_after_train": torch.mean(train_out["primal"]),
                     "Primal_baseline": torch.mean(baseline["primal"]),
                     "Primal_greedy": torch.mean(greedy["primal"]),
+                    "Gain_before_train": torch.mean(
+                        train_in["init_cost"] - train_in["min_cost"]
+                    ),
+                    "Gain_after_train": torch.mean(
+                        train_out["init_cost"] - train_out["min_cost"]
+                    ),
+                    "Gain_baseline": torch.mean(
+                        baseline["init_cost"] - baseline["min_cost"]
+                    ),
+                    "Gain_greedy": torch.mean(greedy["init_cost"] - greedy["min_cost"]),
+                    "Acceptance_rate_before_train": torch.mean(train_in["n_acc"]),
+                    "Acceptance_rate_after_train": torch.mean(train_out["n_acc"]),
+                    "Acceptance_rate_baseline": torch.mean(baseline["n_acc"]),
+                    "Acceptance_rate_greedy": torch.mean(greedy["n_acc"]),
+                    "Rejection_rate_before_train": torch.mean(train_in["n_rej"]),
+                    "Rejection_rate_after_train": torch.mean(train_out["n_rej"]),
+                    "Rejection_rate_baseline": torch.mean(baseline["n_rej"]),
+                    "Rejection_rate_greedy": torch.mean(greedy["n_rej"]),
+                    "Reward": torch.mean(train_out["reward"]),
                 }
                 WandbLogger.log(logs)
             train_loss = torch.mean(train_out["min_cost"])

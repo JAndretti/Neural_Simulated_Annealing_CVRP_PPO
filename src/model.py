@@ -81,10 +81,11 @@ class CVRPActor(SAModel):
         return smpl, torch.log(taken_probs)
 
     def get_logits(
-        self, state: torch.Tensor, action: torch.Tensor
+        self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         n_problems, problem_dim, _ = state.shape
         x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
+        pb = kwargs["problem"]
 
         c1 = action[:, 0]
         # c2 = action[:, 1]
@@ -96,7 +97,9 @@ class CVRPActor(SAModel):
         c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
 
         # City 1 net
+        mask = ~(state[:, :, 0] != 0)
         logits = self.city1_net(c1_state)[..., 0]
+        logits[mask] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs)
 
@@ -114,10 +117,13 @@ class CVRPActor(SAModel):
         c2_state = torch.cat([base, c1_state], -1)
 
         # City 2 net
+        mask = ~(
+            pb.allowed_permutations(
+                state[:, :, 0].unsqueeze(-1).long(), c1.unsqueeze(-1).long()
+            )
+        )
         logits = self.city2_net(c2_state)[..., 0]
-        logits[arange, c1] = -float("inf")
-        logits[arange, c1_prev] = -float("inf")
-        logits[arange, c1_next] = -float("inf")
+        logits[mask] = -float("inf")
 
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs)

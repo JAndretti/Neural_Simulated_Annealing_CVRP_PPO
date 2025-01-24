@@ -86,6 +86,7 @@ def sa(
     # Init archive
     best_x = x = init_x
     min_cost = problem.cost(best_x)
+    init_cost = min_cost.clone()
     primal = min_cost
     first_cost = cost = min_cost
     n_acc, n_rej = 0, 0
@@ -115,7 +116,7 @@ def sa(
                     state, greedy=greedy, problem=problem
                 )
             if record_state:
-                logits = actor.get_logits(state, action)
+                logits = actor.get_logits(state, action, problem=problem)
                 distributions.append(logits)
                 actions.append(action)
 
@@ -206,11 +207,13 @@ def sa(
         "min_cost": min_cost,
         "primal": primal,
         "ngain": ngain,
-        "n_acc": n_acc,
-        "n_rej": n_rej,
+        "n_acc": n_acc.float(),
+        "n_rej": n_rej.float(),
         "distributions": distributions,
         "states": states,
         "actions": actions,
         "acceptance": acceptance,
         "costs": costs,
+        "init_cost": init_cost,
+        "reward": reward,
     }

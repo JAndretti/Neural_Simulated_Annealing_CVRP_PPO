@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple
 
 import torch
+import torch.nn.functional as F
+
 
 from utils import repeat_to, convert_tensor
 
@@ -21,7 +23,7 @@ def greedy_init_batch(demands, capacity):
     # Initialize tensors
     routes = torch.zeros(
         batch_size,
-        pb_size + int(pb_size * 0.20),  # Add 20% to the maximum route length
+        pb_size + int(pb_size * 0.40),  # Add 20% to the maximum route length
         # to avoid trimming because we add 0 many times
         # for depot
         dtype=torch.long,
@@ -30,6 +32,15 @@ def greedy_init_batch(demands, capacity):
     clients = torch.arange(1, pb_size, device=demands.device).repeat(
         batch_size, 1
     )  # [batch_size, pb_size-1]
+    # Shuffle the clients within each batch
+    clients = torch.stack([row[torch.randperm(row.size(0))] for row in clients])
+    clients = torch.cat(
+        [
+            torch.zeros(clients.size(0), 1, dtype=clients.dtype),
+            clients,
+        ],
+        dim=1,
+    )
     capacity_left = torch.full(
         (batch_size,), capacity, device=demands.device
     )  # Remaining capacity per truck
@@ -79,25 +90,25 @@ def greedy_init_batch(demands, capacity):
         )
 
     # Add final depot and pad with zeros
-    routes[torch.arange(batch_size), route_lengths] = 0
-    routes = routes[
-        :, : route_lengths.max() + 10
-    ]  # Trim or pad routes for uniform length
+    # routes[torch.arange(batch_size), route_lengths] = 0
+    # routes = routes[
+    #     :, : route_lengths.max() + 10
+    # ]  # Trim or pad routes for uniform length
 
-    # Add zero at the beginning of each route
-    routes = torch.cat(
-        [torch.zeros(batch_size, 1, dtype=torch.long, device=routes.device), routes],
-        dim=1,
-    )
+    # # Add zero at the beginning of each route
+    # routes = torch.cat(
+    #     [torch.zeros(batch_size, 1, dtype=torch.long, device=routes.device), routes],
+    #     dim=1,
+    # )
     # Replace all negative numbers in routes with 0
     routes = torch.where(routes < 0, torch.tensor(0, device=routes.device), routes)
     return routes.unsqueeze(-1)  # Add trailing dimension for compatibility
 
 
-def generate_init_x(self):
-    """Generate initial greedy solutions for all batch demands."""
-    perm = greedy_init_batch(self.demands, self.capacity).to(self.device)
-    return perm
+# def generate_init_x(self):
+#     """Generate initial greedy solutions for all batch demands."""
+#     perm = greedy_init_batch(self.demands, self.capacity).to(self.device)
+#     return perm
 
 
 class Problem(ABC):
@@ -138,7 +149,11 @@ class Problem(ABC):
 
     def to_state(self, x: torch.Tensor, temp: torch.Tensor):
         """Concatenate state encoding with x and repeat temp."""
-        return torch.cat([x, self.get_coords(x[..., 0]), repeat_to(temp, x)], -1)
+        padding = x.size(1) - self.state_encoding.size(1)
+        if padding > 0:
+            self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
+            return torch.cat([x, self_state_encoding, repeat_to(temp, x)], -1)
+        return torch.cat([x, self.state_encoding, repeat_to(temp, x)], -1)
 
     def from_state(
         self, state: torch.Tensor
@@ -359,18 +374,18 @@ class CVRP(Problem):
         grp = convert_tensor(agg)
         mask1 = (
             (dem > 0)
-            & (
-                torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-                != node
-            )
+            # & (
+            #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+            #     != node
+            # )
             & (grp == grp.gather(1, node))
         )
         mask2 = (
             (dem > 0)
-            & (
-                torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-                != node
-            )
+            # & (
+            #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+            #     != node
+            # )
             & (agg + dem.gather(1, node) - dem - self.capacity <= 0)
             & (agg.gather(1, node) + dem - dem.gather(1, node) - self.capacity <= 0)
         )

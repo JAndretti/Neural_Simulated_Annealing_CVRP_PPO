@@ -1,16 +1,16 @@
 # Model
-MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20241211_152739_1lik5x0b/"
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250124_145610_9crbn6h3/"
 EMBEDDING_DIM: 16
 
 # Device
 DEVICE: "cpu"
 
 # seed
-SEED: 124
+SEED: 123
 
 # Problem
-PROBLEM_DIM: 30
-N_PROBLEMS: 100
+PROBLEM_DIM: 20
+N_PROBLEMS: 50
 
 # SA
 INNER_STEPS: 1
@@ -33,5 +33,9 @@ HILL: True
 N_THREADS: 4
 
 # Visualization
-VISU_DIM: 150
+PLOT: True
+VISU_DIM: 20
+MAX_LOAD: 30
 VISU_STEPS: 40
+
+OR_TOOLS_TIME: 1
