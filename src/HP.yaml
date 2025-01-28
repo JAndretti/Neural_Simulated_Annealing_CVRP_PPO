@@ -2,7 +2,7 @@ PROJECT: "Neural_Simulated_Annealing"
 GROUP: "CVRP"
 
 # Wandb
-LOG: False
+LOG: True
 
 # Device
 DEVICE: "cpu"
@@ -17,8 +17,8 @@ INNER_STEPS: 1
 SEED: 42
 
 #CVRP
-PROBLEM_DIM: 50
-MAX_LOAD: 40
+PROBLEM_DIM: 20
+MAX_LOAD: 30
 N_PROBLEMS: 256
 
 #Model

@@ -1,5 +1,5 @@
 # Model
-MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250124_145610_9crbn6h3/"
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250124_182025_4g4fabut/"
 EMBEDDING_DIM: 16
 
 # Device

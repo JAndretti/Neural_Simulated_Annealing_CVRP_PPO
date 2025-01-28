@@ -3,6 +3,7 @@ import os
 import random
 import numpy as np
 import matplotlib.pyplot as plt
+from rich import print
 
 
 from model import CVRPActor
@@ -94,40 +95,52 @@ def main():
                 break
             fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(25, 15))
 
-            # prob1 = torch.softmax(logit[0], dim=-1)
-            # prob2 = torch.softmax(logit[1], dim=-1)
+            prob1 = torch.exp(logit[0])
+            prob2 = torch.exp(logit[1])
 
             # Premier graphique en bar pour logit[0]
-            ax1.bar(range(len(logit[0].squeeze())), logit[0].squeeze())
+            ax1.bar(range(len(prob1.squeeze())), prob1.squeeze())
             ax1.set_title("Distribution prob actor 1")
 
             # Second graphique en bar pour logit[1]
-            ax2.bar(range(len(logit[1].squeeze())), logit[1].squeeze())
+            ax2.bar(range(len(prob2.squeeze())), prob2.squeeze())
             ax2.set_title("Distribution prob actor 2")
 
             action_start = action[0][0].item()
             action_end = action[0][1].item()
 
-            if action_start > action_end:
-                action_start, action_end = action_end, action_start
-
             # Troisième graphique pour le chemin actuel du TSP
-            nodes = state[0, :, 0].tolist()
-            n1 = int(nodes[action_start])
-            n2 = int(nodes[action_end])
-            coords1 = state[0, :, 1]
-            coords2 = state[0, :, 2]
-            temperature = state[0, 0, 3]
+            x, coords, temp = (
+                state[..., :1],
+                state[..., 1:-1],
+                state[..., [-1]],
+            )
+            coords = coords.gather(1, x.long().expand_as(coords))
+            x = x.squeeze().long().tolist()
+            n1 = int(x[action_start])
+            n2 = int(x[action_end])
+            coords1 = coords[0, :, 0]
+            coords2 = coords[0, :, 1]
+            temperature = temp.squeeze().long().tolist()[0]
 
-            plot_CVRP(ax3, nodes, coords1, coords2, title="Current Solution")
+            plot_CVRP(ax3, x, coords1, coords2, title="Current Solution")
 
             next_state = states[iter + 1]
             # Quatrième graphique pour le chemin actuel du TSP
-            nodes = next_state[0, :, 0].tolist()
-            coords1 = next_state[0, :, 1]
-            coords2 = next_state[0, :, 2]
+            x, coords, temp = (
+                next_state[..., :1],
+                next_state[..., 1:-1],
+                next_state[..., [-1]],
+            )
+            coords = coords.gather(1, x.long().expand_as(coords))
+            x = x.squeeze().long().tolist()
+            n1 = int(x[action_start])
+            n2 = int(x[action_end])
+            coords1 = coords[0, :, 0]
+            coords2 = coords[0, :, 1]
+            temperature = temp.squeeze().long().tolist()[0]
 
-            plot_CVRP(ax4, nodes, coords1, coords2, title="After action")
+            plot_CVRP(ax4, x, coords1, coords2, title="After action")
             fig.suptitle(
                 f"Action idx: {action.squeeze().tolist()}, Action node : {n1, n2}, "
                 f"Acceptance : {acc.item()}, "
@@ -137,6 +150,14 @@ def main():
             plt.show()
             iter += 1
         # print("Visualisation done")
+        plt.figure(figsize=(10, 6))
+        plt.plot([cost.item() for cost in costs], label="Cost Evolution trained model")
+        plt.xlabel("Iteration")
+        plt.ylabel("Cost")
+        plt.title("Evolution of Costs Over Iterations")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
     # BASELINE
 
@@ -154,12 +175,48 @@ def main():
         )
     min_cost_baseline_short = baseline["min_cost"]
     acceptance_baseline_short = baseline["acceptance"]
+    costs = baseline["costs"]
+    if cfg["PLOT"]:
+        plt.figure(figsize=(10, 6))
+        plt.plot([cost.item() for cost in costs], label="Cost Evolution Baseline")
+        plt.xlabel("Iteration")
+        plt.ylabel("Cost")
+        plt.title("Evolution of Costs Over Iterations")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
-    cfg["OUTER_STEPS"] = 10000
+    cfg["OUTER_STEPS"] = 10 * (cfg["VISU_DIM"] ** 2)
     stop_temp = 0.01
-    init_temp = 10000
+    init_temp = 1
     alpha = np.log(stop_temp) - np.log(init_temp)
     cfg["ALPHA"] = np.exp(alpha / cfg["OUTER_STEPS"]).item()
+
+    with torch.no_grad():
+        actor.eval()
+        big_train = sa(
+            actor,
+            problem,
+            init_x,
+            cfg,
+            replay=None,
+            baseline=False,
+            greedy=False,
+            record_state=True,
+        )
+    min_cost_big_train = big_train["min_cost"]
+    acceptance_big_train = big_train["acceptance"]
+    costs = big_train["costs"]
+    if cfg["PLOT"]:
+        plt.figure(figsize=(10, 6))
+        plt.plot([cost.item() for cost in costs], label="Cost Evolution Trained model")
+        plt.xlabel("Iteration")
+        plt.ylabel("Cost")
+        plt.title("Evolution of Costs Over Iterations")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
     with torch.no_grad():
         actor.eval()
         baseline = sa(
@@ -181,27 +238,39 @@ def main():
     if cfg["PLOT"]:
         fig, ax = plt.subplots(figsize=(12, 8))
         state = problem.to_state(solution_or_tools, torch.tensor(1))
-        nodes = state[0, :, 0].tolist()
-        coords1 = state[0, :, 1]
-        coords2 = state[0, :, 2]
-        plot_CVRP(ax, nodes, coords1, coords2, title="OR Tools Solution :")
+        x, coords, temp = (
+            state[..., :1],
+            state[..., 1:-1],
+            state[..., [-1]],
+        )
+        coords = coords.gather(1, x.long().expand_as(coords))
+        x = x.squeeze().long().tolist()
+        coords1 = coords[0, :, 0]
+        coords2 = coords[0, :, 1]
+        plot_CVRP(ax, x, coords1, coords2, title="OR Tools Solution :")
         plt.show()
 
-    print("Statistics :")
-    print(f"Initial cost : {costs[0].item()}")
-    print(f"Min cost : {min_cost.item()}")
+    print("Statistics:")
+    print(f"Initial cost: {costs[0].item():.4f}")
     print(
-        f"Acceptance : {sum(acceptance).item()} /{cfg["VISU_STEPS"]} -> {sum(acceptance).item()/cfg['VISU_STEPS']*100}%"
+        f"Cost Baseline with {cfg["VISU_STEPS"]}: {min_cost_baseline_short.item():.4f}"
     )
-    print(f"Cost Baseline same parameters: {min_cost_baseline_short.item()}")
     print(
-        f"Acceptance Baseline same parameters: {sum(acceptance_baseline_short).item()} /{cfg['VISU_STEPS']} -> {sum(acceptance_baseline_short).item()/cfg['VISU_STEPS']*100}%"
+        f"Acceptance Baseline with {cfg["VISU_STEPS"]}: {sum(acceptance_baseline_short).item()} /{cfg['VISU_STEPS']} -> {sum(acceptance_baseline_short).item()/cfg['VISU_STEPS']*100:.4f}%"
     )
-    print(f"Cost Baseline : {min_cost_baseline.item()}")
+    print(f"Min Cost Model with {cfg["VISU_STEPS"]}: {min_cost.item()}")
     print(
-        f"Acceptance Baseline : {sum(acceptance_baseline).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_baseline).item()/cfg['OUTER_STEPS']*100}%"
+        f"Acceptance Model with {cfg["VISU_STEPS"]}: {sum(acceptance).item()} /{cfg["VISU_STEPS"]} -> {sum(acceptance).item()/cfg['VISU_STEPS']*100:.4f}%"
     )
-    print(f"Cost or tools : {cost_or_tools.item()}")
+    print(f"Cost Baseline with {cfg['OUTER_STEPS']}: {min_cost_baseline.item():.4f}")
+    print(
+        f"Acceptance Baseline with {cfg['OUTER_STEPS']}: {sum(acceptance_baseline).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_baseline).item()/cfg['OUTER_STEPS']*100:.4f}%"
+    )
+    print(f"Min Cost Model with {cfg['OUTER_STEPS']}: {min_cost_big_train.item()}")
+    print(
+        f"Acceptance Model with {cfg['OUTER_STEPS']}: {sum(acceptance_big_train).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_big_train).item()/cfg['OUTER_STEPS']*100:.4f}%"
+    )
+    print(f"Cost or tools for {cfg["OR_TOOLS_TIME"]} sec: {cost_or_tools.item()}")
 
 
 if __name__ == "__main__":

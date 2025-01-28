@@ -271,37 +271,33 @@ class CVRP(Problem):
         return self.swap(s, a).long()
 
     def swap(self, x: torch.Tensor, a: torch.Tensor):
-        """Swap cities a[0] <-> a[1].
+        """
+        Vectorizes the inversion of values in `x` at the indices specified in `a`
+        row by row.
 
         Args:
-            x: perm vector [batch size, pb_size, 1]
-            a: cities to swap ([batch size, 2])
+            x (torch.Tensor): A tensor of shape [n, dim, 1].
+            a (torch.Tensor): A tensor of shape [n, 2] containing the indices to swap
+            for each row of `x`.
+
+        Returns:
+            torch.Tensor: The tensor `x` with the specified swaps applied.
         """
-        batch_size = x.size(0)
-        pb_size = x.size(1)
+        new_x = x.clone()  # To avoid modifying the original tensor
 
-        # Indices to swap
-        idx1 = a[:, 0]  # Start indices
-        idx2 = a[:, 1]  # Destination indices
+        # Row indices
+        rows = torch.arange(new_x.size(0)).unsqueeze(1)  # Shape [n, 1]
 
-        # Create a mask for the indices across the batch
-        batch_indices = (
-            torch.arange(batch_size).unsqueeze(1).to(self.device)
-        )  # [batch_size, 1]
+        # Column indices specified by `a`
+        idx1 = a[:, 0].unsqueeze(1)  # Shape [n]
+        idx2 = a[:, 1].unsqueeze(1)  # Shape [n]
 
-        # Create a tensor with combined indices for both positions
-        flat_indices1 = batch_indices * pb_size + idx1.unsqueeze(1)
-        flat_indices2 = batch_indices * pb_size + idx2.unsqueeze(1)
+        # Extract values at the indices to swap
+        temp = new_x[rows, idx1].clone()  # Shape [n, 1]
+        new_x[rows, idx1] = new_x[rows, idx2]
+        new_x[rows, idx2] = temp
 
-        # Apply the swaps
-        x_flat = x.view(-1, 1)  # Flatten for easy manipulation
-        x_flat[flat_indices1], x_flat[flat_indices2] = (
-            x_flat[flat_indices2].clone(),
-            x_flat[flat_indices1].clone(),
-        )
-
-        # Reshape back
-        return x_flat.view(batch_size, pb_size, 1)
+        return new_x
 
     @property
     def state_encoding(self) -> torch.Tensor:
