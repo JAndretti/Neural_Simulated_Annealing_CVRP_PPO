@@ -9,7 +9,7 @@ class Scheduler:
             self.scheduler = CyclicLR(**kwargs)
         elif scheduler_type == "cosine":
             self.scheduler = CosineAnnealingWarmRestarts(**kwargs)
-        elif scheduler_type == "lambda":
+        elif scheduler_type == "lam":
             self.scheduler = LambdaLR(**kwargs)
         elif scheduler_type == "step":
             self.scheduler = Step(**kwargs)
@@ -30,6 +30,7 @@ class CyclicLR:
         self.mode = mode
 
     def step(self, step):
+        step = torch.tensor(step)
         cycle = torch.floor(1 + step / (2 * self.step_size_up))
         x = torch.abs(step / self.step_size_up - 2 * cycle + 1)
 

@@ -9,10 +9,10 @@ OUTER_STEPS:
 - 1000
 
 SCHEDULER:
-- "cosine"
 - "cyclic"
-- "lambda"
+- "cosine"
 - "step"
+- "lam"
 
 CLUSTERING: 
 - False

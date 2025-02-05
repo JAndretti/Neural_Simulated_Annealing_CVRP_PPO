@@ -172,7 +172,7 @@ def sa(
                 next_temp = scheduler.step(step)
                 if min(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1:
                     scheduler = Scheduler(
-                        "lambda",
+                        "lam",
                         T_max=1,
                         T_min=0.01,
                         step_max=cfg["OUTER_STEPS"] - step + 1,
