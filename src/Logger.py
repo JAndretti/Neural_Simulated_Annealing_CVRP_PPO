@@ -19,6 +19,7 @@ def save_HP(path, cfg):
     if not os.path.exists(path):
         with open(path, "w") as fichier:
             yaml.dump(cfg, fichier, default_flow_style=False, allow_unicode=True)
+    return path
 
 
 def create_folder(dirname):
@@ -169,7 +170,8 @@ class WandbLogger:
             )
 
             save_func(file_path, model)
-            save_HP(cls._instance.model_dir, cls._instance.HP)
+            path = save_HP(cls._instance.model_dir, cls._instance.HP)
+            return path
 
         else:
             if val_loss < cls._instance.sorted_queue[-1][0]:

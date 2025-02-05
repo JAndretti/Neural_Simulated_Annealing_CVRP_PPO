@@ -37,14 +37,18 @@ class SAModel(nn.Module):
 
 
 class CVRPActor(SAModel):
-    def __init__(self, embed_dim: int, device: str) -> None:
+    def __init__(
+        self, embed_dim: int, c1: int = 7, c2: int = 13, device: str = "cpu"
+    ) -> None:
         super().__init__(device)
-        self.c1_state_dim = 7
-        self.c2_state_dim = 13
+        self.c1_state_dim = c1
+        self.c2_state_dim = c2
 
         # Mean and std computation
         self.city1_net = nn.Sequential(
             nn.Linear(self.c1_state_dim, embed_dim, bias=True, device=device),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
@@ -53,6 +57,8 @@ class CVRPActor(SAModel):
         # Mean and std computation
         self.city2_net = nn.Sequential(
             nn.Linear(self.c2_state_dim, embed_dim, bias=True, device=device),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
@@ -83,18 +89,32 @@ class CVRPActor(SAModel):
     def get_logits(
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        n_problems, problem_dim, _ = state.shape
-        x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
+        n_problems, problem_dim, dim = state.shape
+        if dim == 4:
+            x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
+        else:
+            x, coords, temp, per_node, per_route = (
+                state[..., :1],
+                state[..., 1:3],
+                state[..., 3:4],
+                state[..., 4:5],
+                state[..., [-1]],
+            )
         pb = kwargs["problem"]
-
-        c1 = action[:, 0]
-        # c2 = action[:, 1]
 
         # First city encoding
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
-        c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
+        if dim == 4:
+            c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
+        else:
+            c1_state = torch.cat(
+                [coords, coords_prev, coords_next, temp, per_node, per_route], -1
+            )
+
+        c1 = action[:, 0]
+        # c2 = action[:, 1]
 
         # City 1 net
         mask = ~(state[:, :, 0] != 0)
@@ -159,15 +179,19 @@ class CVRPActor(SAModel):
     def sample(
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        n_problems, problem_dim, _ = state.shape
-        x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
         pb = kwargs["problem"]
+        n_problems, problem_dim, dim = state.shape
 
-        # First city encoding
+        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * num_extra_features, dim=-1
+        )
+
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
-        c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
+
+        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
 
         # City 1 net
         mask = ~(state[:, :, 0] != 0)
@@ -207,17 +231,21 @@ class CVRPActor(SAModel):
     def evaluate(
         self, state: torch.Tensor, action: torch.Tensor, mask2: torch.Tensor, **kwargs
     ) -> torch.Tensor:
-        n_problems, problem_dim, _ = state.shape
-        x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
+        n_problems, problem_dim, dim = state.shape
 
-        c1 = action[:, 0]
-        c2 = action[:, 1]
+        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * num_extra_features, dim=-1
+        )
 
-        # First city encoding
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
-        c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
+
+        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
+
+        c1 = action[:, 0]
+        c2 = action[:, 1]
 
         # City 1 net
         mask = ~(state[:, :, 0] != 0)
@@ -251,10 +279,10 @@ class CVRPActor(SAModel):
 
 
 class CVRPCritic(nn.Module):
-    def __init__(self, embed_dim: int, device: str = "cpu") -> None:
+    def __init__(self, embed_dim: int, c: int = 7, device: str = "cpu") -> None:
         super().__init__()
         self.q_func = nn.Sequential(
-            nn.Linear(7, embed_dim, device=device),
+            nn.Linear(c, embed_dim, device=device),
             nn.ReLU(),
             nn.Linear(embed_dim, 1, device=device),
         )
@@ -269,12 +297,17 @@ class CVRPCritic(nn.Module):
                 m.bias.data.fill_(0.01)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        n_problems, problem_dim, _ = state.shape
-        x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
-        # state encoding
+        n_problems, problem_dim, dim = state.shape
+
+        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * num_extra_features, dim=-1
+        )
+
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
-        state = torch.cat([coords, coords_prev, coords_next, temp], -1)
+
+        state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
         q_values = self.q_func(state).view(n_problems, problem_dim)
         return q_values.mean(dim=-1)

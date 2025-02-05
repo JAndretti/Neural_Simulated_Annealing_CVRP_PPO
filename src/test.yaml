@@ -1,6 +1,5 @@
 # Model
-MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250124_182025_4g4fabut/"
-EMBEDDING_DIM: 16
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250131_114055_fjvt3gj4/"
 
 # Device
 DEVICE: "cpu"
@@ -8,9 +7,6 @@ DEVICE: "cpu"
 # seed
 SEED: 123
 
-# Problem
-PROBLEM_DIM: 20
-N_PROBLEMS: 50
 
 # SA
 INNER_STEPS: 1
@@ -19,18 +15,15 @@ METHOD: ppo
 REWARD: immediate
 GAMMA: 0.9
 STOP_TEMP: 0.01
-INIT_TEMP: 1.0
+INIT_TEMP: 1
 
-# SA Baseline
-# OUTER_STEPS_BASE: 10000
-STOP_TEMP_BASE: 0.001
-INIT_TEMP_BASE: 100000
 
-# Hill
-HILL: True
+C1: 9
+C2: 15
+C: 9
+EMBEDDING_DIM: 16
+DEMANDS: True
 
-# Threading
-N_THREADS: 4
 
 # Visualization
 PLOT: True
@@ -39,3 +32,5 @@ MAX_LOAD: 30
 VISU_STEPS: 40
 
 OR_TOOLS_TIME: 1
+
+

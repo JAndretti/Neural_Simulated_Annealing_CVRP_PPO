@@ -88,27 +88,9 @@ def greedy_init_batch(demands, capacity):
             ),
             clients,
         )
-
-    # Add final depot and pad with zeros
-    # routes[torch.arange(batch_size), route_lengths] = 0
-    # routes = routes[
-    #     :, : route_lengths.max() + 10
-    # ]  # Trim or pad routes for uniform length
-
-    # # Add zero at the beginning of each route
-    # routes = torch.cat(
-    #     [torch.zeros(batch_size, 1, dtype=torch.long, device=routes.device), routes],
-    #     dim=1,
-    # )
     # Replace all negative numbers in routes with 0
     routes = torch.where(routes < 0, torch.tensor(0, device=routes.device), routes)
     return routes.unsqueeze(-1)  # Add trailing dimension for compatibility
-
-
-# def generate_init_x(self):
-#     """Generate initial greedy solutions for all batch demands."""
-#     perm = greedy_init_batch(self.demands, self.capacity).to(self.device)
-#     return perm
 
 
 class Problem(ABC):
@@ -148,18 +130,21 @@ class Problem(ABC):
         pass
 
     def to_state(self, x: torch.Tensor, temp: torch.Tensor):
-        """Concatenate state encoding with x and repeat temp."""
-        padding = x.size(1) - self.state_encoding.size(1)
-        if padding > 0:
-            self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
-            return torch.cat([x, self_state_encoding, repeat_to(temp, x)], -1)
-        return torch.cat([x, self.state_encoding, repeat_to(temp, x)], -1)
+        """Concatenate state encoding with x and repeat temp dynamically."""
+        padding = max(0, x.size(1) - self.state_encoding.size(1))
+        self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
+        components = [x, self_state_encoding, repeat_to(temp, x)]
 
-    def from_state(
-        self, state: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Split state into x, state encoding, and temperature."""
-        return state[..., : self.x_dim], state[..., self.x_dim : -1], state[..., -1:]
+        if self.demands_model:
+            components.extend(self.get_percentage_demands(x))
+
+        return torch.cat(components, -1)
+
+    def from_state(self, state: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        """Split state into components dynamically."""
+        num_extra_features = state.shape[-1] - 3  # Adjusting for variable dimensions
+        split_sizes = [1, 2] + [1] * num_extra_features
+        return tuple(torch.split(state, split_sizes, dim=-1))
 
 
 class CVRP(Problem):
@@ -173,7 +158,7 @@ class CVRP(Problem):
         device: str = "cpu",
         params: str = {},
     ):
-        """Initialize BinPacking.
+        """Initialize CVRP.
 
         Args:
             dim: num items
@@ -184,15 +169,21 @@ class CVRP(Problem):
         self.dim = dim
         self.n_problems = n_problems
         self.capacity = capacity
+        self.params = params
+        self.demands_model = self.params["DEMANDS"]
+        self.clustering = self.params["CLUSTERING"]
+        self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
 
     def set_params(self, params: dict = None) -> None:
         """Set params.
 
         Args:
-            coords: [batch size, dim, 2]
+            params: Dictionary containing 'coords' and 'demands'
         """
-        self.coords = params["coords"]
-        self.demands = params["demands"]
+        if params["coords"] is not None:
+            self.coords = params["coords"]
+        if params["demands"] is not None:
+            self.demands = params["demands"]
 
     def generate_params(self, mode: str = "train") -> Dict[str, torch.Tensor]:
         """Generate random coordinates in the unit square.
@@ -202,13 +193,46 @@ class CVRP(Problem):
         """
         if mode == "test":
             self.manual_seed(0)
-        coords = torch.rand(
-            self.n_problems,
-            self.dim + 1,
-            2,
-            device=self.device,
-            generator=self.generator,
-        )
+        if self.clustering and mode != "test":
+            # Generate 5 centers for each problem
+            cluster_centers = torch.rand(
+                self.n_problems,
+                self.nb_clusters_max,
+                2,
+                device=self.device,
+                generator=self.generator,
+            )  # Size (n_problems, self.nb_clusters_max, 2)
+
+            # Assigne every node to a cluster
+            cluster_assignments = torch.randint(
+                0,
+                self.nb_clusters_max,
+                (self.n_problems, self.dim + 1),
+                device=self.device,
+                generator=self.generator,
+            )  # size (n_problems, dim + 1)
+
+            # Add some noise to the cluster centers
+            coords = cluster_centers[
+                torch.arange(self.n_problems)[:, None], cluster_assignments
+            ] + 0.05 * torch.randn(
+                self.n_problems,
+                self.dim + 1,
+                2,
+                device=self.device,
+                generator=self.generator,
+            )
+
+            # Clamp the coordinates to the unit square
+            coords = torch.clamp(coords, 0, 1)
+        else:
+            coords = torch.rand(
+                self.n_problems,
+                self.dim + 1,
+                2,
+                device=self.device,
+                generator=self.generator,
+            )
         demands = torch.randint(
             1,
             10,
@@ -262,7 +286,7 @@ class CVRP(Problem):
         return f_res
 
     def update(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        """Silly city swap for now
+        """Silly city swap
 
         Args:
             s: perm vector [batch size, coords]
@@ -362,12 +386,30 @@ class CVRP(Problem):
         left_distance = torch.roll(right_distance, 1, 1)
         return torch.stack([right_distance, left_distance], -1)
 
-    def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
-        """Return all allowed permutations from a node."""
-        # Create a mask for the conditions
+    def get_arg_demands(self, x: torch.Tensor) -> torch.Tensor:
+        """Return demands, grp, max route"""
         dem = self.get_demands(x[..., 0])
         agg = self.cost_demands(x)
         grp = convert_tensor(agg)
+        return dem, agg, grp
+
+    def get_percentage_demands(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the percentage of the demands per nodes."""
+        dem, agg, grp = self.get_arg_demands(x)
+
+        per_nodes = torch.nan_to_num(dem / agg, nan=0.0)
+        per_routes = agg / self.capacity
+        per_nodes_routes = dem / self.capacity
+        return (
+            per_nodes.unsqueeze(-1),
+            per_routes.unsqueeze(-1),
+            per_nodes_routes.unsqueeze(-1),
+        )
+
+    def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
+        """Return all allowed permutations from a node."""
+        # Create a mask for the conditions
+        dem, agg, grp = self.get_arg_demands(x)
         mask1 = (
             (dem > 0)
             # & (

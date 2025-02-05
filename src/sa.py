@@ -10,6 +10,7 @@ from model import SAModel
 from problem import Problem
 from replay import Replay
 from utils import extend_to
+from scheduler import Scheduler
 
 
 def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
@@ -29,6 +30,7 @@ def sa(
     random_std: float = 0.2,
     greedy: bool = False,
     record_state: bool = False,
+    test: bool = False,
     replay: Replay = None,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -79,9 +81,16 @@ def sa(
     device = init_x.device
 
     # Init SA cfg
-    temp = torch.tensor([cfg["INNER_STEPS"]], device=device)
+    temp = torch.tensor([cfg["INIT_TEMP"]], device=device)
     next_temp = temp
-    alpha = cfg["ALPHA"]
+    if test:
+        cfg["SCHEDULER"] = "step"
+    scheduler = Scheduler(
+        cfg["SCHEDULER"],
+        T_max=cfg["INIT_TEMP"],
+        T_min=cfg["STOP_TEMP"],
+        step_max=cfg["OUTER_STEPS"],
+    )
 
     # Init archive
     best_x = x = init_x
@@ -94,13 +103,14 @@ def sa(
     acceptance = []
     costs = [min_cost]
     reward = None
+    last_step = None
 
     # Map initial solution to state
     state = problem.to_state(x, temp).to(device)
     next_state = state
 
     # Loops through the different temperatures in the optimization.
-    for _ in range(cfg["OUTER_STEPS"]):
+    for step in range(cfg["OUTER_STEPS"]):
         # Try a number of actions at each temperature.
         for j in range(cfg["INNER_STEPS"]):
             if record_state:
@@ -121,7 +131,7 @@ def sa(
                 actions.append(action)
 
             # Compute proposal
-            x, spec, _ = problem.from_state(state)
+            x, *_ = problem.from_state(state)
             proposal = problem.update(x, action)
 
             # Compute gain
@@ -156,7 +166,19 @@ def sa(
 
             # Cool down if we completed the inner steps
             if j == cfg["INNER_STEPS"] - 1:
-                next_temp = temp * alpha
+                if last_step is not None:
+                    step -= last_step
+
+                next_temp = scheduler.step(step)
+                if min(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1:
+                    scheduler = Scheduler(
+                        "lambda",
+                        T_max=1,
+                        T_min=0.01,
+                        step_max=cfg["OUTER_STEPS"] - step + 1,
+                    )
+                    last_step = step
+
             else:
                 next_temp = temp
             # Compute next state
@@ -176,6 +198,10 @@ def sa(
                     reward = -primal.view(-1, 1)
                 else:
                     raise NotImplementedError
+
+            # if step == cfg["OUTER_STEPS"] - 1:
+            #     tmp = init_cost - min_cost
+            #     reward += tmp
 
             if replay is not None:
                 replay.push(

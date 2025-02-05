@@ -51,10 +51,16 @@ def load_model(model, folder):
 
 def main():
     # Initialize the actor model
-    actor = CVRPActor(cfg["EMBEDDING_DIM"], device=cfg["DEVICE"])
+    actor = CVRPActor(
+        cfg["EMBEDDING_DIM"],
+        cfg["C1"],
+        cfg["C2"],
+    )
     actor = load_model(actor, cfg["MODEL_DIR"])
     set_seed(cfg["SEED"])
-    problem = CVRP(cfg["VISU_DIM"], 1, cfg["MAX_LOAD"], device=cfg["DEVICE"])
+    problem = CVRP(
+        cfg["VISU_DIM"], 1, cfg["MAX_LOAD"], cfg["DEMANDS"], device=cfg["DEVICE"]
+    )
     params = problem.generate_params()
     params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
     problem.set_params(params)
@@ -93,7 +99,7 @@ def main():
         ):
             if iter == cfg["VISU_STEPS"] - 1:
                 break
-            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(25, 15))
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(25, 10))
 
             prob1 = torch.exp(logit[0])
             prob2 = torch.exp(logit[1])

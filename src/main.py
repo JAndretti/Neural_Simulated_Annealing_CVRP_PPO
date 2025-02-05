@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import random
 from tqdm import tqdm
+import pandas as pd
 
 from model import CVRPActor, CVRPCritic
 from ppo import ppo
@@ -11,9 +12,36 @@ from problem import CVRP
 from replay import Replay
 from Logger import WandbLogger
 from HP import _HP, get_script_arguments
+from or_tools import test_or_tools
 
 cfg = _HP("src/HP.yaml")
 cfg.update(get_script_arguments(cfg.keys()))
+
+# Check if the results file exists, if not create it
+results_file = "src/res.csv"
+if not os.path.exists(results_file):
+    # Create a DataFrame with the necessary columns
+    df = pd.DataFrame(
+        columns=[
+            "Model",
+            "Type",
+            "Train Init Temp",
+            "Train Steps",
+            "Train Dimension",
+            "Train Demand",
+            "Train Scheduler",
+            "Train Clustering",
+            "Dimension",
+            "Step",
+            "Initial Temp",
+            "Initial Cost",
+            "Final Cost",
+            "Gain",
+        ]
+    )
+else:
+    # Load the existing results file
+    df = pd.read_csv(results_file)
 
 if cfg["LOG"]:
     WandbLogger.init(None, 3, cfg)
@@ -54,20 +82,30 @@ def main(cfg) -> None:
         cfg["DEVICE"] = "cpu"
         print("MPS device not found. Running on cpu.")
 
-    # Define temperature decay parameter as a function of the number of steps
-    alpha = np.log(cfg["STOP_TEMP"]) - np.log(cfg["INIT_TEMP"])
-    cfg["ALPHA"] = np.exp(alpha / cfg["OUTER_STEPS"]).item()
-
     # Set seeds
     torch.manual_seed(cfg["SEED"])
     random.seed(cfg["SEED"])
     np.random.seed(cfg["SEED"])
 
     problem = CVRP(
-        cfg["PROBLEM_DIM"], cfg["N_PROBLEMS"], cfg["MAX_LOAD"], device=cfg["DEVICE"]
+        cfg["PROBLEM_DIM"],
+        cfg["N_PROBLEMS"],
+        cfg["MAX_LOAD"],
+        device=cfg["DEVICE"],
+        params=cfg,
     )
-    actor = CVRPActor(cfg["EMBEDDING_DIM"], device=cfg["DEVICE"])
-    critic = CVRPCritic(cfg["EMBEDDING_DIM"], device=cfg["DEVICE"])
+
+    if cfg["DEMANDS"]:
+        cfg["C1"] = cfg["C"] = 10
+        cfg["C2"] = 16
+    # Initialize the actor and critic models
+    actor = CVRPActor(
+        cfg["EMBEDDING_DIM"],
+        cfg["C1"],
+        cfg["C2"],
+        device=cfg["DEVICE"],
+    )
+    critic = CVRPCritic(cfg["EMBEDDING_DIM"], cfg["C"], device=cfg["DEVICE"])
 
     # Set problem seed
     problem.manual_seed(cfg["SEED"])
@@ -80,7 +118,7 @@ def main(cfg) -> None:
     )
     with tqdm(range(cfg["N_EPOCHS"])) as t:
         for i in t:
-            # Create random instances
+            # Create random instances``
             params = problem.generate_params()
             params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
             problem.set_params(params)
@@ -144,17 +182,127 @@ def main(cfg) -> None:
 
             t.set_description(f"Training loss: {train_loss:.4f}")
 
-            # path = os.path.join(os.getcwd(), "models")
             name = cfg["PROJECT"] + "_" + str(cfg["PROBLEM_DIM"]) + "_" + cfg["METHOD"]
-            # create_folder(path)
-            # torch.save(actor.state_dict(), os.path.join(path, name))
-            WandbLogger.log_model(
+
+            path = WandbLogger.log_model(
                 save_func=save_model,
                 model=actor,
                 val_loss=train_loss.item(),
                 epoch=i,
                 model_name=name,
             )
+    train_init_temp = cfg["INIT_TEMP"]
+    train_outer_steps = cfg["OUTER_STEPS"]
+    # Create random test instances
+    for dim, load in zip([20, 50], [30, 40]):
+        problem = CVRP(
+            dim,
+            100,
+            load,
+            device=cfg["DEVICE"],
+            params=cfg,
+        )
+        params = problem.generate_params(mode="test")
+        params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
+        problem.set_params(params)
+        # Find initial solutions
+        init_x = problem.generate_init_x()
+        init_cost = problem.cost(init_x)
+        cfg["VISU_DIM"] = dim
+        cfg["MAX_LOAD"] = load
+        solution_or_tools = test_or_tools(params, cfg)
+        cost_or_tools = problem.cost(solution_or_tools)
+        df.loc[len(df)] = [
+            path,
+            f"OR_TOOLS {cfg["OR_TOOLS_TIME"]} sec",
+            "/",
+            "/",
+            "/",
+            "/",
+            "/",
+            "/",
+            dim,
+            "/",
+            "/",
+            torch.mean(init_cost).item(),
+            torch.mean(cost_or_tools).item(),
+            torch.mean(init_cost).item() - torch.mean(cost_or_tools).item(),
+        ]
+        print(
+            f"Cost of OR_Tools ({cfg["OR_TOOLS_TIME"]} sec, "
+            f"{dim} pb size): {torch.mean(cost_or_tools).item()}"
+        )
+        for init_temp in [1, 100, 1000]:
+            for step in [cfg["OUTER_STEPS"], 10 * (cfg["OUTER_STEPS"] ** 2)]:
+                cfg["OUTER_STEPS"] = step
+                cfg["INIT_TEMP"] = init_temp
+
+                test = sa(
+                    actor,
+                    problem,
+                    init_x,
+                    cfg,
+                    replay=None,
+                    baseline=False,
+                    greedy=False,
+                    test=True,
+                )
+                min_cost_train = test["min_cost"]
+                print(
+                    f"Cost of the trained solution ({step} steps, {init_temp} temp, "
+                    f"{dim} pb size): {torch.mean(min_cost_train).item()}"
+                )
+                df.loc[len(df)] = [
+                    path,
+                    "Trained",
+                    train_init_temp,
+                    train_outer_steps,
+                    cfg["PROBLEM_DIM"],
+                    cfg["DEMANDS"],
+                    cfg["SCHEDULER"],
+                    cfg["CLUSTERING"],
+                    dim,
+                    cfg["OUTER_STEPS"],
+                    cfg["INIT_TEMP"],
+                    torch.mean(init_cost).item(),
+                    torch.mean(min_cost_train).item(),
+                    torch.mean(init_cost).item() - torch.mean(min_cost_train).item(),
+                ]
+                test_baseline = sa(
+                    actor,
+                    problem,
+                    init_x,
+                    cfg,
+                    replay=None,
+                    baseline=True,
+                    greedy=False,
+                    test=True,
+                )
+                min_cost_baseline = test_baseline["min_cost"]
+                print(
+                    f"Cost of the Baseline ({step} steps, {init_temp} temp, "
+                    f"{dim} pb size): {torch.mean(min_cost_baseline).item()}"
+                )
+                df.loc[len(df)] = [
+                    path,
+                    "Baseline",
+                    train_init_temp,
+                    train_outer_steps,
+                    cfg["PROBLEM_DIM"],
+                    cfg["DEMANDS"],
+                    cfg["SCHEDULER"],
+                    cfg["CLUSTERING"],
+                    dim,
+                    cfg["OUTER_STEPS"],
+                    cfg["INIT_TEMP"],
+                    torch.mean(init_cost).item(),
+                    torch.mean(min_cost_baseline).item(),
+                    torch.mean(init_cost).item() - torch.mean(min_cost_baseline).item(),
+                ]
+
+    # Save the DataFrame to a CSV file
+    df.to_csv(results_file, index=False)
+    print(f"Saved results file at {results_file}")
 
 
 if __name__ == "__main__":

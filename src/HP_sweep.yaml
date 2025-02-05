@@ -1,3 +1,19 @@
-EMBEDDING_DIM: 
-  - 16
-  - 64
+INIT_TEMP:
+- 1000
+- 100
+- 1
+
+OUTER_STEPS: 
+- 40
+- 100
+- 1000
+
+SCHEDULER:
+- "cosine"
+- "cyclic"
+- "lambda"
+- "step"
+
+CLUSTERING: 
+- False
+- True
