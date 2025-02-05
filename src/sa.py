@@ -169,7 +169,7 @@ def sa(
                 if last_step is not None:
                     step -= last_step
 
-                next_temp = scheduler.step(step)
+                next_temp = scheduler.step(step).to(device)
                 if min(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1:
                     scheduler = Scheduler(
                         "lam",
