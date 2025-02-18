@@ -30,7 +30,6 @@ def sa(
     random_std: float = 0.2,
     greedy: bool = False,
     record_state: bool = False,
-    test: bool = False,
     replay: Replay = None,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -83,8 +82,6 @@ def sa(
     # Init SA cfg
     temp = torch.tensor([cfg["INIT_TEMP"]], device=device)
     next_temp = temp
-    if test:
-        cfg["SCHEDULER"] = "step"
     scheduler = Scheduler(
         cfg["SCHEDULER"],
         T_max=cfg["INIT_TEMP"],
@@ -100,13 +97,17 @@ def sa(
     first_cost = cost = min_cost
     n_acc, n_rej = 0, 0
     distributions, states, actions = [], [], []
+    temperature = [temp]
     acceptance = []
     costs = [min_cost]
     reward = None
     last_step = None
+    end = False
 
     # Map initial solution to state
-    state = problem.to_state(x, temp).to(device)
+    state = problem.to_state(
+        x, temp, torch.tensor(1 - (1 / cfg["OUTER_STEPS"]), device=device)
+    ).to(device)
     next_state = state
 
     # Loops through the different temperatures in the optimization.
@@ -170,7 +171,11 @@ def sa(
                     step -= last_step
 
                 next_temp = scheduler.step(step).to(device)
-                if min(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1:
+
+                if (
+                    max(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1
+                    and not end
+                ):
                     scheduler = Scheduler(
                         "lam",
                         T_max=1,
@@ -178,11 +183,18 @@ def sa(
                         step_max=cfg["OUTER_STEPS"] - step + 1,
                     )
                     last_step = step
+                    end = True
+                    next_temp = torch.tensor([1], device=device)
+                temperature.append(next_temp)
 
             else:
                 next_temp = temp
             # Compute next state
-            next_state = problem.to_state(next_x, next_temp)
+            next_state = problem.to_state(
+                next_x,
+                next_temp,
+                torch.tensor(1 - (step / cfg["OUTER_STEPS"])).to(device),
+            ).to(device)
 
             # Compute reward (only relevant when training with PPO)
             if cfg["METHOD"] == "ppo":
@@ -242,4 +254,5 @@ def sa(
         "costs": costs,
         "init_cost": init_cost,
         "reward": reward,
+        "temperature": temperature,
     }

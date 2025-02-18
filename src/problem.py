@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple
+from itertools import combinations
+
 
 import torch
 import torch.nn.functional as F
@@ -129,11 +131,13 @@ class Problem(ABC):
     def generate_init_state(self) -> torch.Tensor:
         pass
 
-    def to_state(self, x: torch.Tensor, temp: torch.Tensor):
+    def to_state(
+        self, x: torch.Tensor, temp: torch.Tensor, time: torch.Tensor
+    ) -> torch.Tensor:
         """Concatenate state encoding with x and repeat temp dynamically."""
         padding = max(0, x.size(1) - self.state_encoding.size(1))
         self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
-        components = [x, self_state_encoding, repeat_to(temp, x)]
+        components = [x, self_state_encoding, repeat_to(temp, x), repeat_to(time, x)]
 
         if self.demands_model:
             components.extend(self.get_percentage_demands(x))
@@ -193,7 +197,7 @@ class CVRP(Problem):
         """
         if mode == "test":
             self.manual_seed(0)
-        if self.clustering and mode != "test":
+        if self.clustering:
             # Generate 5 centers for each problem
             cluster_centers = torch.rand(
                 self.n_problems,
@@ -430,3 +434,51 @@ class CVRP(Problem):
 
         # Combine the masks
         return mask1 | mask2
+
+    def get_permutable_pairs(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Returns a boolean tensor indicating which pairs of nodes are swappable.
+
+        Args:
+            x (torch.Tensor): Tensor representing the solutions of the current problems.
+
+        Returns:
+            torch.Tensor: A boolean tensor of size (B, N, N) where
+            True indicates that (i, j) is swappable.
+        """
+        batch_size = x.shape[0]
+        num_nodes = torch.count_nonzero(x[0])
+
+        # Retrieve demand and group information
+        dem, agg, grp = self.get_arg_demands(x)
+
+        # Initialize an output tensor (B, N+1, N+1)
+        permutable = torch.zeros(
+            (batch_size, num_nodes + 1, num_nodes + 1),
+            dtype=torch.bool,
+            device=x.device,
+        )
+
+        # Generate all possible pairs of nodes (excluding depot)
+        pairs = list(combinations(range(1, num_nodes + 1), 2))  # (i, j) with i < j
+
+        for i, j in pairs:
+            # Condition 1: Both nodes must have a demand > 0
+            valid_demand = (dem[:, i] > 0) & (dem[:, j] > 0)
+
+            # Condition 2: Nodes must belong to the same group
+            same_group = grp[:, i] == grp[:, j]
+
+            # Condition 3: Check the capacity constraint after swapping
+            valid_capacity = (agg + dem[:, j] - dem[:, i] <= self.capacity) & (
+                agg + dem[:, i] - dem[:, j] <= self.capacity
+            )
+
+            # A swap is possible if all conditions are met
+            can_swap = valid_demand & same_group & valid_capacity
+
+            # Update the tensor of possible swaps
+            permutable[:, i, j] = can_swap
+            permutable[:, j, i] = can_swap  # Ensure symmetry
+
+        return permutable

@@ -1,4 +1,5 @@
 import torch
+import matplotlib.pyplot as plt
 
 
 class Scheduler:
@@ -22,7 +23,7 @@ class Scheduler:
 
 class CyclicLR:
 
-    def __init__(self, T_max, T_min, step_max, step_size_up=10, mode="triangular2"):
+    def __init__(self, T_max, T_min, step_max, step_size_up=20, mode="triangular2"):
         self.T_min = T_min
         self.T_max = T_max
         self.step_max = step_max
@@ -106,9 +107,47 @@ class Step:
         self.lambda_factor = (T_min / T_max) ** (1 / step_max)
 
     def step(self, epoch):
-        if epoch == self.step_max / 2 or epoch == 3 * self.step_max / 4:
-            tmp = self.temp
-            for i in range(epoch):
-                tmp *= self.lambda_factor
-            self.temp = tmp
+        if (
+            epoch == int(self.step_max / 2)
+            or epoch == int(3 * self.step_max / 4)
+            or epoch == int(6 * self.step_max / 7)
+        ):
+            self.temp = self.temp / 3
         return torch.tensor(self.temp)
+
+
+def main():
+    T_max = 1
+    T_min = 0.01
+    step_max = 100
+
+    schedulers = {
+        "cyclic": CyclicLR(T_max=T_max, T_min=T_min, step_max=step_max),
+        "cyclic2": CyclicLR(
+            T_max=T_max, T_min=T_min, step_max=step_max, mode="triangular"
+        ),
+        "cosine": CosineAnnealingWarmRestarts(
+            T_max=T_max, T_min=T_min, step_max=step_max
+        ),
+        "lam": LambdaLR(T_max=T_max, T_min=T_min, step_max=step_max),
+        "step": Step(T_max=T_max, T_min=T_min, step_max=step_max),
+    }
+
+    steps = range(step_max)
+    plt.figure(figsize=(10, 6))
+
+    for name, scheduler in schedulers.items():
+        values = [scheduler.step(step).item() for step in steps]
+        plt.plot(steps, values, label=name)
+
+        plt.xlabel("Steps")
+        plt.ylabel("Learning Rate")
+        plt.title("Learning Rate Schedulers")
+        plt.legend()
+        plt.grid(True)
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

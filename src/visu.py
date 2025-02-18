@@ -57,19 +57,21 @@ def main():
         cfg["C2"],
     )
     actor = load_model(actor, cfg["MODEL_DIR"])
-    set_seed(cfg["SEED"])
+    base_step = cfg["OUTER_STEPS"]
+    set_seed(0)
     problem = CVRP(
-        cfg["VISU_DIM"], 1, cfg["MAX_LOAD"], cfg["DEMANDS"], device=cfg["DEVICE"]
+        cfg["PROBLEM_DIM"],
+        cfg["N_PROBLEMS"],
+        cfg["MAX_LOAD"],
+        device=cfg["DEVICE"],
+        params=cfg,
     )
-    params = problem.generate_params()
+    params = problem.generate_params(mode="test")
     params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
     problem.set_params(params)
     # Find initial solutions
     init_x = problem.generate_init_x()
 
-    cfg["OUTER_STEPS"] = cfg["VISU_STEPS"]
-    alpha = np.log(cfg["STOP_TEMP"]) - np.log(cfg["INIT_TEMP"])
-    cfg["ALPHA"] = np.exp(alpha / cfg["OUTER_STEPS"]).item()
     with torch.no_grad():
         actor.eval()
         train = sa(
@@ -92,12 +94,13 @@ def main():
     acceptance = train["acceptance"]  # list of bool of size VISU_STEPS
     costs = train["costs"]  # list of costs of size VISU_STEPS
     min_cost = train["min_cost"]
+    temp_tmp = train["temperature"]
     iter = 0
     if cfg["PLOT"]:
         for logit, state, action, acc, cost in zip(
             logits, states, actions, acceptance, costs
         ):
-            if iter == cfg["VISU_STEPS"] - 1:
+            if iter == cfg["OUTER_STEPS"] - 1:
                 break
             fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(25, 10))
 
@@ -118,8 +121,8 @@ def main():
             # Troisième graphique pour le chemin actuel du TSP
             x, coords, temp = (
                 state[..., :1],
-                state[..., 1:-1],
-                state[..., [-1]],
+                state[..., 1:3],
+                state[..., 3:4],
             )
             coords = coords.gather(1, x.long().expand_as(coords))
             x = x.squeeze().long().tolist()
@@ -135,8 +138,8 @@ def main():
             # Quatrième graphique pour le chemin actuel du TSP
             x, coords, temp = (
                 next_state[..., :1],
-                next_state[..., 1:-1],
-                next_state[..., [-1]],
+                next_state[..., 1:3],
+                next_state[..., 3:4],
             )
             coords = coords.gather(1, x.long().expand_as(coords))
             x = x.squeeze().long().tolist()
@@ -144,7 +147,7 @@ def main():
             n2 = int(x[action_end])
             coords1 = coords[0, :, 0]
             coords2 = coords[0, :, 1]
-            temperature = temp.squeeze().long().tolist()[0]
+            temperature = temp.squeeze().tolist()[0]
 
             plot_CVRP(ax4, x, coords1, coords2, title="After action")
             fig.suptitle(
@@ -155,13 +158,26 @@ def main():
             )
             plt.show()
             iter += 1
-        # print("Visualisation done")
-        plt.figure(figsize=(10, 6))
-        plt.plot([cost.item() for cost in costs], label="Cost Evolution trained model")
-        plt.xlabel("Iteration")
-        plt.ylabel("Cost")
-        plt.title("Evolution of Costs Over Iterations")
-        plt.legend()
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        ax1.plot(
+            [cost.item() for cost in costs],
+            label="Cost Evolution trained model",
+            color="b",
+        )
+        ax1.set_xlabel("Iteration")
+        ax1.set_ylabel("Cost", color="b")
+        ax1.tick_params(axis="y", labelcolor="b")
+
+        ax2 = ax1.twinx()
+        ax2.plot([t.item() for t in temp_tmp], label="Temperature", color="r")
+        ax2.set_ylabel("Temperature", color="r")
+        ax2.tick_params(axis="y", labelcolor="r")
+
+        fig.suptitle("Evolution of Costs and Temperature Over Iterations")
+        fig.legend(loc="upper right")
+        fig.tight_layout()
         plt.grid(True)
         plt.show()
 
@@ -182,21 +198,29 @@ def main():
     min_cost_baseline_short = baseline["min_cost"]
     acceptance_baseline_short = baseline["acceptance"]
     costs = baseline["costs"]
+    temp_tmp = baseline["temperature"]
     if cfg["PLOT"]:
-        plt.figure(figsize=(10, 6))
-        plt.plot([cost.item() for cost in costs], label="Cost Evolution Baseline")
-        plt.xlabel("Iteration")
-        plt.ylabel("Cost")
-        plt.title("Evolution of Costs Over Iterations")
-        plt.legend()
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        ax1.plot(
+            [cost.item() for cost in costs], label="Cost Evolution Baseline", color="b"
+        )
+        ax1.set_xlabel("Iteration")
+        ax1.set_ylabel("Cost", color="b")
+        ax1.tick_params(axis="y", labelcolor="b")
+
+        ax2 = ax1.twinx()
+        ax2.plot([t.item() for t in temp_tmp], label="Temperature", color="r")
+        ax2.set_ylabel("Temperature", color="r")
+        ax2.tick_params(axis="y", labelcolor="r")
+
+        fig.suptitle("Evolution of Costs and Temperature Over Iterations")
+        fig.legend(loc="upper right")
+        fig.tight_layout()
         plt.grid(True)
         plt.show()
 
-    cfg["OUTER_STEPS"] = 10 * (cfg["VISU_DIM"] ** 2)
-    stop_temp = 0.01
-    init_temp = 1
-    alpha = np.log(stop_temp) - np.log(init_temp)
-    cfg["ALPHA"] = np.exp(alpha / cfg["OUTER_STEPS"]).item()
+    cfg["OUTER_STEPS"] = 1000  # 10 * (cfg["PROBLEM_DIM"] ** 2)
 
     with torch.no_grad():
         actor.eval()
@@ -213,14 +237,44 @@ def main():
     min_cost_big_train = big_train["min_cost"]
     acceptance_big_train = big_train["acceptance"]
     costs = big_train["costs"]
+    temp_tmp = big_train["temperature"]
     if cfg["PLOT"]:
-        plt.figure(figsize=(10, 6))
-        plt.plot([cost.item() for cost in costs], label="Cost Evolution Trained model")
-        plt.xlabel("Iteration")
-        plt.ylabel("Cost")
-        plt.title("Evolution of Costs Over Iterations")
-        plt.legend()
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        ax1.plot(
+            [cost.item() for cost in costs],
+            label="Cost Evolution Trained model",
+            color="b",
+        )
+        ax1.set_xlabel("Iteration")
+        ax1.set_ylabel("Cost", color="b")
+        ax1.tick_params(axis="y", labelcolor="b")
+
+        ax2 = ax1.twinx()
+        ax2.plot([t.item() for t in temp_tmp], label="Temperature", color="r")
+        ax2.set_ylabel("Temperature", color="r")
+        ax2.tick_params(axis="y", labelcolor="r")
+
+        fig.suptitle("Evolution of Costs and Temperature Over Iterations")
+        fig.legend(loc="upper right")
+        fig.tight_layout()
         plt.grid(True)
+        plt.show()
+
+        fig, ax1 = plt.subplots(figsize=(12, 8))
+        states = big_train["states"]
+        costs = big_train["costs"]
+        min_cost_state = states[costs.index(min(costs))]
+        x, coords, temp = (
+            min_cost_state[..., :1],
+            min_cost_state[..., 1:3],
+            min_cost_state[..., 3:4],
+        )
+        coords = coords.gather(1, x.long().expand_as(coords))
+        x = x.squeeze().long().tolist()
+        coords1 = coords[0, :, 0]
+        coords2 = coords[0, :, 1]
+        plot_CVRP(ax1, x, coords1, coords2, title="State with Minimum Cost")
         plt.show()
 
     with torch.no_grad():
@@ -239,15 +293,16 @@ def main():
     acceptance_baseline = baseline["acceptance"]
 
     # OR TOOLS
+    cfg["OR_DIM"] = cfg["PROBLEM_DIM"]
     solution_or_tools = test_or_tools(params, cfg)
     cost_or_tools = problem.cost(solution_or_tools)
     if cfg["PLOT"]:
         fig, ax = plt.subplots(figsize=(12, 8))
         state = problem.to_state(solution_or_tools, torch.tensor(1))
         x, coords, temp = (
-            state[..., :1],
-            state[..., 1:-1],
-            state[..., [-1]],
+            next_state[..., :1],
+            next_state[..., 1:3],
+            next_state[..., 3:4],
         )
         coords = coords.gather(1, x.long().expand_as(coords))
         x = x.squeeze().long().tolist()
@@ -258,25 +313,23 @@ def main():
 
     print("Statistics:")
     print(f"Initial cost: {costs[0].item():.4f}")
+    print(f"Cost Baseline with {base_step}: {min_cost_baseline_short.item():.4f}")
     print(
-        f"Cost Baseline with {cfg["VISU_STEPS"]}: {min_cost_baseline_short.item():.4f}"
+        f"Acceptance Baseline with {base_step}: {sum(acceptance_baseline_short).item()} /{base_step} -> {sum(acceptance_baseline_short).item()/base_step*100:.1f}%"
     )
+    print(f"Min Cost Model with {base_step}: {min_cost.item():.4f}")
     print(
-        f"Acceptance Baseline with {cfg["VISU_STEPS"]}: {sum(acceptance_baseline_short).item()} /{cfg['VISU_STEPS']} -> {sum(acceptance_baseline_short).item()/cfg['VISU_STEPS']*100:.4f}%"
-    )
-    print(f"Min Cost Model with {cfg["VISU_STEPS"]}: {min_cost.item()}")
-    print(
-        f"Acceptance Model with {cfg["VISU_STEPS"]}: {sum(acceptance).item()} /{cfg["VISU_STEPS"]} -> {sum(acceptance).item()/cfg['VISU_STEPS']*100:.4f}%"
+        f"Acceptance Model with {base_step}: {sum(acceptance).item()} /{base_step} -> {sum(acceptance).item()/base_step*100:.1f}%"
     )
     print(f"Cost Baseline with {cfg['OUTER_STEPS']}: {min_cost_baseline.item():.4f}")
     print(
-        f"Acceptance Baseline with {cfg['OUTER_STEPS']}: {sum(acceptance_baseline).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_baseline).item()/cfg['OUTER_STEPS']*100:.4f}%"
+        f"Acceptance Baseline with {cfg['OUTER_STEPS']}: {sum(acceptance_baseline).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_baseline).item()/cfg['OUTER_STEPS']*100:.1f}%"
     )
-    print(f"Min Cost Model with {cfg['OUTER_STEPS']}: {min_cost_big_train.item()}")
+    print(f"Min Cost Model with {cfg['OUTER_STEPS']}: {min_cost_big_train.item():.4f}")
     print(
-        f"Acceptance Model with {cfg['OUTER_STEPS']}: {sum(acceptance_big_train).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_big_train).item()/cfg['OUTER_STEPS']*100:.4f}%"
+        f"Acceptance Model with {cfg['OUTER_STEPS']}: {sum(acceptance_big_train).item()} /{cfg['OUTER_STEPS']} -> {sum(acceptance_big_train).item()/cfg['OUTER_STEPS']*100:.1f}%"
     )
-    print(f"Cost or tools for {cfg["OR_TOOLS_TIME"]} sec: {cost_or_tools.item()}")
+    print(f"Cost or tools for {cfg["OR_TOOLS_TIME"]} sec: {cost_or_tools.item():.4f}")
 
 
 if __name__ == "__main__":

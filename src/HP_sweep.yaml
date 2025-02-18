@@ -4,16 +4,14 @@ INIT_TEMP:
 - 1
 
 OUTER_STEPS: 
-- 40
 - 100
 - 1000
 
 SCHEDULER:
-- "cyclic"
-- "cosine"
 - "step"
-- "lam"
+- "cyclic"
+
 
 CLUSTERING: 
-- False
 - True
+- False

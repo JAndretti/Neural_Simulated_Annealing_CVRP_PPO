@@ -157,7 +157,7 @@ class WandbLogger:
         """
         if cls._instance is None:
             logging.warning("No Wandb logging")
-            return
+            return None
         if len(cls._instance.sorted_queue) < cls._instance.num_models_to_keep:
             if model_name is not None:
                 model_name += "_"
@@ -185,3 +185,4 @@ class WandbLogger:
                     logging.error("Error : Can't delete file %s", file_suffix_to_delete)
 
                 cls.log_model(save_func, model, val_loss, epoch, model_name)
+        return None

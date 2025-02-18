@@ -1,5 +1,5 @@
 # Model
-MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250131_114055_fjvt3gj4/"
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250208_184635_2oy6lz5k/"
 
 # Device
 DEVICE: "cpu"
@@ -10,27 +10,31 @@ SEED: 123
 
 # SA
 INNER_STEPS: 1
-# OUTER_STEPS: 40
+OUTER_STEPS: 100
 METHOD: ppo
 REWARD: immediate
 GAMMA: 0.9
 STOP_TEMP: 0.01
 INIT_TEMP: 1
+SCHEDULER: "lam"
 
+#CVRP
+PROBLEM_DIM: 50
+MAX_LOAD: 40
+N_PROBLEMS: 1
+CLUSTERING: False
+NB_CLUSTERS_MAX: 5
 
-C1: 9
-C2: 15
-C: 9
+C1: 10
+C2: 16
+C: 10
 EMBEDDING_DIM: 16
 DEMANDS: True
 
 
 # Visualization
 PLOT: True
-VISU_DIM: 20
-MAX_LOAD: 30
-VISU_STEPS: 40
 
-OR_TOOLS_TIME: 1
+OR_TOOLS_TIME: 60
 
 

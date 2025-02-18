@@ -6,3 +6,5 @@ ortools
 numpy
 rich
 matplotlib
+kaleido
+plotly

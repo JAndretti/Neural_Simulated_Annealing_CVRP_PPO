@@ -89,29 +89,18 @@ class CVRPActor(SAModel):
     def get_logits(
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        n_problems, problem_dim, dim = state.shape
-        if dim == 4:
-            x, coords, temp = state[..., :1], state[..., 1:-1], state[..., [-1]]
-        else:
-            x, coords, temp, per_node, per_route = (
-                state[..., :1],
-                state[..., 1:3],
-                state[..., 3:4],
-                state[..., 4:5],
-                state[..., [-1]],
-            )
         pb = kwargs["problem"]
+        n_problems, problem_dim, dim = state.shape
+        num_extra_features = dim - 3
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * num_extra_features, dim=-1
+        )
 
-        # First city encoding
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
-        if dim == 4:
-            c1_state = torch.cat([coords, coords_prev, coords_next, temp], -1)
-        else:
-            c1_state = torch.cat(
-                [coords, coords_prev, coords_next, temp, per_node, per_route], -1
-            )
+
+        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
 
         c1 = action[:, 0]
         # c2 = action[:, 1]
@@ -182,7 +171,7 @@ class CVRPActor(SAModel):
         pb = kwargs["problem"]
         n_problems, problem_dim, dim = state.shape
 
-        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
+        num_extra_features = dim - 3
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * num_extra_features, dim=-1
         )

@@ -10,9 +10,7 @@ from ortools.constraint_solver import pywrapcp
 from problem import CVRP
 
 from HP import _HP, get_script_arguments
-
-cfg = _HP("src/test.yaml")
-cfg.update(get_script_arguments(cfg.keys()))
+from tqdm import tqdm
 
 
 # Function to calculate Euclidean distance between two points
@@ -164,12 +162,15 @@ def solve_w_ortools(coord, distance_matrix, demand, or_tools_time, max_load, dim
         solution = get_solution_nodes(data, manager, routing, solution, dim)
         distance = distance_solution(distance_matrix, solution)
         return solution, distance
+    return None, None
 
 
 def or_tools(params, cfg):
     solutions = []
     distances = []
-    for coord, demand in zip(params["coords"], params["demands"]):
+    for coord, demand in tqdm(
+        zip(params["coords"], params["demands"]), total=len(params["coords"])
+    ):
         coord = [tuple(row) for row in coord.tolist()]
         dist_matrix = compute_euclidean_distance_matrix(coord)
         solution, distance = solve_w_ortools(
@@ -178,7 +179,7 @@ def or_tools(params, cfg):
             demand.tolist(),
             cfg["OR_TOOLS_TIME"],
             cfg["MAX_LOAD"],
-            cfg["VISU_DIM"],
+            cfg["OR_DIM"],
         )
         solutions.append(solution)
         distances.append(distance)
@@ -186,9 +187,11 @@ def or_tools(params, cfg):
 
 
 def main():
+    cfg = _HP("src/test.yaml")
+    cfg.update(get_script_arguments(cfg.keys()))
 
     set_seed(cfg["SEED"])
-    problem = CVRP(cfg["VISU_DIM"], cfg["N_PROBLEMS"], device="cpu")
+    problem = CVRP(cfg["OR_DIM"], cfg["N_PROBLEMS"], device="cpu")
     params = problem.generate_params()
     params = {k: v.to("cpu") for k, v in params.items()}
     problem.set_params(params)
@@ -203,7 +206,16 @@ def main():
 
 def test_or_tools(params, cfg):
     solutions, _ = or_tools(params, cfg)
-    return torch.tensor(solutions).unsqueeze(-1)
+    tensor = filter_and_convert_solutions(solutions)
+    return tensor
+
+
+def filter_and_convert_solutions(solutions):
+    """Filter out None values and convert the list to a tensor."""
+    filtered_solutions = [sol for sol in solutions if sol is not None]
+    if not filtered_solutions:
+        return None
+    return torch.tensor(filtered_solutions).unsqueeze(-1)
 
 
 if __name__ == "__main__":
