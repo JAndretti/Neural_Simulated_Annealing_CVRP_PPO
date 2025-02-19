@@ -2,7 +2,7 @@ PROJECT: "Neural_Simulated_Annealing"
 GROUP: "CVRP with advencment"
 
 # Wandb
-LOG: True
+LOG: False
 
 # Device
 DEVICE: "cpu"
@@ -30,6 +30,7 @@ C2: 13
 C: 7
 EMBEDDING_DIM: 16
 DEMANDS: True
+PAIRS: True
 
 #Training
 LR: 0.0001

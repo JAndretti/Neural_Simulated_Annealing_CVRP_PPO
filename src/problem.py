@@ -137,11 +137,12 @@ class Problem(ABC):
         """Concatenate state encoding with x and repeat temp dynamically."""
         padding = max(0, x.size(1) - self.state_encoding.size(1))
         self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
-        components = [x, self_state_encoding, repeat_to(temp, x), repeat_to(time, x)]
+        components = [x, self_state_encoding]
 
         if self.demands_model:
             components.extend(self.get_percentage_demands(x))
-
+        components.extend([repeat_to(temp, x), repeat_to(time, x)])
+        # components.extend(repeat_to(c, temp.size(1)) for c in components)
         return torch.cat(components, -1)
 
     def from_state(self, state: torch.Tensor) -> Tuple[torch.Tensor, ...]:
@@ -435,7 +436,7 @@ class CVRP(Problem):
         # Combine the masks
         return mask1 | mask2
 
-    def get_permutable_pairs(self, x: torch.Tensor) -> torch.Tensor:
+    def get_permutable_pairs(self, x: torch.Tensor, indices: Tuple) -> torch.Tensor:
         """
         Returns a boolean tensor indicating which pairs of nodes are swappable.
 
@@ -447,22 +448,20 @@ class CVRP(Problem):
             True indicates that (i, j) is swappable.
         """
         batch_size = x.shape[0]
-        num_nodes = torch.count_nonzero(x[0])
 
         # Retrieve demand and group information
         dem, agg, grp = self.get_arg_demands(x)
 
         # Initialize an output tensor (B, N+1, N+1)
         permutable = torch.zeros(
-            (batch_size, num_nodes + 1, num_nodes + 1),
+            (batch_size, indices[0].size(0)),
             dtype=torch.bool,
             device=x.device,
         )
+        colonne = 0
+        # Iterate over all pairs of nodes
+        for i, j in zip(indices[0], indices[1]):
 
-        # Generate all possible pairs of nodes (excluding depot)
-        pairs = list(combinations(range(1, num_nodes + 1), 2))  # (i, j) with i < j
-
-        for i, j in pairs:
             # Condition 1: Both nodes must have a demand > 0
             valid_demand = (dem[:, i] > 0) & (dem[:, j] > 0)
 
@@ -470,15 +469,15 @@ class CVRP(Problem):
             same_group = grp[:, i] == grp[:, j]
 
             # Condition 3: Check the capacity constraint after swapping
-            valid_capacity = (agg + dem[:, j] - dem[:, i] <= self.capacity) & (
-                agg + dem[:, i] - dem[:, j] <= self.capacity
+            valid_capacity = (agg[:, i] + dem[:, j] - dem[:, i] <= self.capacity) & (
+                agg[:, j] + dem[:, i] - dem[:, j] <= self.capacity
             )
 
             # A swap is possible if all conditions are met
-            can_swap = valid_demand & same_group & valid_capacity
+            can_swap = valid_demand & (same_group | valid_capacity)
 
-            # Update the tensor of possible swaps
-            permutable[:, i, j] = can_swap
-            permutable[:, j, i] = can_swap  # Ensure symmetry
+            # Append the result to the permutable tensor
+            permutable[:, colonne] = can_swap
+            colonne += 1
 
         return permutable

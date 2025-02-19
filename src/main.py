@@ -5,7 +5,7 @@ import random
 from tqdm import tqdm
 import pandas as pd
 
-from model import CVRPActor, CVRPCritic
+from model import CVRPActor, CVRPActorPairs, CVRPCritic
 from ppo import ppo
 from sa import sa
 from problem import CVRP
@@ -100,12 +100,15 @@ def main(cfg) -> None:
         cfg["C1"] = cfg["C"] = 11
         cfg["C2"] = 17
     # Initialize the actor and critic models
-    actor = CVRPActor(
-        cfg["EMBEDDING_DIM"],
-        cfg["C1"],
-        cfg["C2"],
-        device=cfg["DEVICE"],
-    )
+    if cfg["PAIRS"]:
+        actor = CVRPActorPairs(device=cfg["DEVICE"])
+    else:
+        actor = CVRPActor(
+            cfg["EMBEDDING_DIM"],
+            cfg["C1"],
+            cfg["C2"],
+            device=cfg["DEVICE"],
+        )
     critic = CVRPCritic(cfg["EMBEDDING_DIM"], cfg["C"], device=cfg["DEVICE"])
 
     # Set problem seed

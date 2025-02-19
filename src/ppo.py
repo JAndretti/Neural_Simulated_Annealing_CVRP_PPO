@@ -53,7 +53,10 @@ def ppo(
         cfg["PROBLEM_DIM"] + (cfg["PROBLEM_DIM"] * 0.40) + 1
     )  # Problem dimensionality 40% for match padding +1 to add depot
     device = cfg["DEVICE"]  # Device (CPU or GPU)
-
+    if cfg["PAIRS"]:
+        mask_dim = int((problem_dim * (problem_dim - 1)) / 2)
+    else:
+        mask_dim = problem_dim
     actor.train()
     critic.train()
 
@@ -66,7 +69,7 @@ def ppo(
         # Format tensors for states, actions, etc.
         state = torch.stack(batch.state).view(nt * n_problems, problem_dim, -1)
         action = torch.stack(batch.action).detach().view(nt * n_problems, -1)
-        mask = torch.stack(batch.mask).detach().view(nt * n_problems, problem_dim)
+        mask = torch.stack(batch.mask).detach().view(nt * n_problems, mask_dim)
         next_state = (
             torch.stack(batch.next_state)
             .detach()
