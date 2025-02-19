@@ -5,7 +5,7 @@ GROUP: "CVRP with advencment"
 LOG: False
 
 # Device
-DEVICE: "cpu"
+DEVICE: "cuda"
 
 # SA
 INIT_TEMP: 1

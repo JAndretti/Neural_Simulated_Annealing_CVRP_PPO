@@ -258,37 +258,59 @@ class CVRP(Problem):
         edge_lengths = self.get_edge_lengths_in_tour(s)
         return torch.sum(edge_lengths, -1)
 
-    def cost_demands(self, s: torch.Tensor) -> torch.Tensor:
+    def cost_demands(
+        self, s: torch.Tensor, demands: torch.Tensor
+    ) -> torch.Tensor:  # TODO to long
         """Compute sum of demands for tours
 
         Args:
             s: [batch size, dim]
         """
-        demands = self.get_demands(s[..., 0])
-        result = torch.zeros_like(demands)
-        for i in range(demands.shape[1]):
-            if i == 0:
-                result[:, i] = demands[:, i]
-            else:
-                result[:, i] = result[:, i - 1] + demands[:, i]
-                result[demands[:, i] == 0, i] = 0
+        # result = torch.zeros_like(demands)
+        # for i in range(demands.shape[1]):
+        #     if i == 0:
+        #         result[:, i] = demands[:, i]
+        #     else:
+        #         result[:, i] = result[:, i - 1] + demands[:, i]
+        #         result[demands[:, i] == 0, i] = 0
 
-        res = torch.flip(result, [1])
-        result = torch.zeros_like(res)
-        current_max = torch.zeros(res.shape[0], dtype=res.dtype).to(self.device)
+        # res = torch.flip(result, [1])
+        # result = torch.zeros_like(res)
+        # current_max = torch.zeros(res.shape[0], dtype=res.dtype).to(self.device)
 
-        for i in range(res.shape[1]):
-            # Update the current max unless we encounter a 0
-            current_max = torch.where(
-                res[:, i] == 0,
-                torch.tensor(0, dtype=res.dtype),
-                torch.max(current_max, res[:, i]),
-            )
-            # Assign the current value of current_max to the result
-            result[:, i] = current_max
+        # for i in range(res.shape[1]):
+        #     # Update the current max unless we encounter a 0
+        #     current_max = torch.where(
+        #         res[:, i] == 0,
+        #         torch.tensor(0, dtype=res.dtype),
+        #         torch.max(current_max, res[:, i]),
+        #     )
+        #     # Assign the current value of current_max to the result
+        #     result[:, i] = current_max
 
-        f_res = torch.flip(result, [1])
-        return f_res
+        # f_res = torch.flip(result, [1])
+        # return f_res
+        # Detect non-zero values
+        mask = demands != 0
+
+        # Create a marker for group breaks (when the difference
+        # between adjacent indices > 1)
+        shift = torch.cat(
+            [torch.zeros((demands.shape[0], 1), dtype=torch.bool), mask[:, :-1]], dim=1
+        )
+        group_change = mask & ~shift  # Start of new groups
+
+        # Assign a unique group identifier (cumsum creates group labels)
+        group_ids = torch.cumsum(group_change, dim=1) * mask
+
+        # Sum by group
+        sums = torch.zeros_like(demands)
+        sums.scatter_add_(1, group_ids, demands)
+
+        # Propagate summed values within their respective groups
+        output = sums.gather(1, group_ids)
+
+        return output
 
     def update(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         """Silly city swap
@@ -394,17 +416,17 @@ class CVRP(Problem):
     def get_arg_demands(self, x: torch.Tensor) -> torch.Tensor:
         """Return demands, grp, max route"""
         dem = self.get_demands(x[..., 0])
-        agg = self.cost_demands(x)
+        agg = self.cost_demands(x, dem)
         grp = convert_tensor(agg)
         return dem, agg, grp
 
     def get_percentage_demands(self, x: torch.Tensor) -> torch.Tensor:
         """Return the percentage of the demands per nodes."""
-        dem, agg, grp = self.get_arg_demands(x)
+        self.dem, self.agg, self.grp = self.get_arg_demands(x)
 
-        per_nodes = torch.nan_to_num(dem / agg, nan=0.0)
-        per_routes = agg / self.capacity
-        per_nodes_routes = dem / self.capacity
+        per_nodes = torch.nan_to_num(self.dem / self.agg, nan=0.0)
+        per_routes = self.agg / self.capacity
+        per_nodes_routes = self.dem / self.capacity
         return (
             per_nodes.unsqueeze(-1),
             per_routes.unsqueeze(-1),
@@ -414,23 +436,28 @@ class CVRP(Problem):
     def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
         """Return all allowed permutations from a node."""
         # Create a mask for the conditions
-        dem, agg, grp = self.get_arg_demands(x)
         mask1 = (
-            (dem > 0)
+            (self.dem > 0)
             # & (
             #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
             #     != node
             # )
-            & (grp == grp.gather(1, node))
+            & (self.grp == self.grp.gather(1, node))
         )
         mask2 = (
-            (dem > 0)
+            (self.dem > 0)
             # & (
             #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
             #     != node
             # )
-            & (agg + dem.gather(1, node) - dem - self.capacity <= 0)
-            & (agg.gather(1, node) + dem - dem.gather(1, node) - self.capacity <= 0)
+            & (self.agg + self.dem.gather(1, node) - self.dem - self.capacity <= 0)
+            & (
+                self.agg.gather(1, node)
+                + self.dem
+                - self.dem.gather(1, node)
+                - self.capacity
+                <= 0
+            )
         )
 
         # Combine the masks
@@ -449,9 +476,6 @@ class CVRP(Problem):
         """
         batch_size = x.shape[0]
 
-        # Retrieve demand and group information
-        dem, agg, grp = self.get_arg_demands(x)
-
         # Initialize an output tensor (B, N+1, N+1)
         permutable = torch.zeros(
             (batch_size, indices[0].size(0)),
@@ -463,15 +487,15 @@ class CVRP(Problem):
         for i, j in zip(indices[0], indices[1]):
 
             # Condition 1: Both nodes must have a demand > 0
-            valid_demand = (dem[:, i] > 0) & (dem[:, j] > 0)
+            valid_demand = (self.dem[:, i] > 0) & (self.dem[:, j] > 0)
 
             # Condition 2: Nodes must belong to the same group
-            same_group = grp[:, i] == grp[:, j]
+            same_group = self.grp[:, i] == self.grp[:, j]
 
             # Condition 3: Check the capacity constraint after swapping
-            valid_capacity = (agg[:, i] + dem[:, j] - dem[:, i] <= self.capacity) & (
-                agg[:, j] + dem[:, i] - dem[:, j] <= self.capacity
-            )
+            valid_capacity = (
+                self.agg[:, i] + self.dem[:, j] - self.dem[:, i] <= self.capacity
+            ) & (self.agg[:, j] + self.dem[:, i] - self.dem[:, j] <= self.capacity)
 
             # A swap is possible if all conditions are met
             can_swap = valid_demand & (same_group | valid_capacity)
