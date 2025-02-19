@@ -296,7 +296,13 @@ class CVRP(Problem):
         # Create a marker for group breaks (when the difference
         # between adjacent indices > 1)
         shift = torch.cat(
-            [torch.zeros((demands.shape[0], 1), dtype=torch.bool), mask[:, :-1]], dim=1
+            [
+                torch.zeros(
+                    (demands.shape[0], 1), dtype=torch.bool, device=self.device
+                ),
+                mask[:, :-1],
+            ],
+            dim=1,
         )
         group_change = mask & ~shift  # Start of new groups
 
