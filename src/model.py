@@ -543,7 +543,10 @@ class CVRPActorPairs(SAModel):
         c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
 
         # Get upper triangular indices for pair combinations
-        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1)
+        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1).to(
+            self.device
+        )
+
         # Find the indices where idx1 equals action[:, 0] and idx2 equals action[:, 1]
         action_idx = (idx1 == action[:, 0].unsqueeze(1)) & (
             idx2 == action[:, 1].unsqueeze(1)
