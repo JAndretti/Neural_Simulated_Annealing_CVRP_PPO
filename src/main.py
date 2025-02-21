@@ -221,7 +221,7 @@ def main(cfg) -> None:
             init_cost = problem.cost(init_x)
             cfg["MAX_LOAD"] = load
             for init_temp in [1, 100, 1000]:
-                for step in [100, 1000, 10 * (dim**2)]:
+                for step in [100, 1000]:
                     for scheduler in ["cyclic", "lam", "step"]:
                         cfg["OUTER_STEPS"] = step
                         cfg["INIT_TEMP"] = init_temp
