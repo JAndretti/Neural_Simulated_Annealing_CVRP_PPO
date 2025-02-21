@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple
-from itertools import combinations
 
 
 import torch
@@ -139,8 +138,8 @@ class Problem(ABC):
         self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
         components = [x, self_state_encoding]
 
-        if self.demands_model:
-            components.extend(self.get_percentage_demands(x))
+        components.extend(self.get_percentage_demands(x))
+        components.extend([self.cost_per_route(x)])
         components.extend([repeat_to(temp, x), repeat_to(time, x)])
         # components.extend(repeat_to(c, temp.size(1)) for c in components)
         return torch.cat(components, -1)
@@ -175,7 +174,6 @@ class CVRP(Problem):
         self.n_problems = n_problems
         self.capacity = capacity
         self.params = params
-        self.demands_model = self.params["DEMANDS"]
         self.clustering = self.params["CLUSTERING"]
         self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
 
@@ -258,6 +256,46 @@ class CVRP(Problem):
         edge_lengths = self.get_edge_lengths_in_tour(s)
         return torch.sum(edge_lengths, -1)
 
+    def cost_per_route(self, s: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the cost per route for a given tensor of routes.
+
+        This function computes the cost per route by first calculating the edge lengths
+        in the tour, then summing these lengths. It creates a mask to identify non-zero
+        elements in the input tensor `s`, detects changes in groups, and assigns unique
+        group identifiers. It then calculates the sum of edge lengths per group and
+        propagates these sums to the corresponding indices. Finally, it normalizes the
+        output by the total cost.
+
+        Args:
+            s (torch.Tensor): A tensor representing the routes.
+
+        Returns:
+            torch.Tensor: A tensor containing the normalized cost per route.
+        """
+        edge_lengths = self.get_edge_lengths_in_tour(s)
+        total_cost = torch.sum(edge_lengths, -1)
+        # Create a mask for non-zero elements in s
+        mask = s.squeeze(-1) != 0
+
+        # Detect group changes
+        shift = torch.cat(
+            [torch.zeros((mask.shape[0], 1), dtype=torch.bool), mask[:, :-1]], dim=1
+        )
+        group_change = mask & ~shift  # Detect the start of new groups
+
+        # Create unique group identifiers
+        group_ids = torch.cumsum(group_change, dim=1) * mask
+
+        # Calculate the sum of values per group
+        sums = torch.zeros_like(edge_lengths)
+        sums.scatter_add_(1, group_ids, edge_lengths)
+
+        # Propagate the sums to the corresponding indices
+        output = sums.gather(1, group_ids) * mask
+
+        return ((output) / total_cost.view(-1, 1)).unsqueeze(-1)
+
     def cost_demands(
         self, s: torch.Tensor, demands: torch.Tensor
     ) -> torch.Tensor:  # TODO to long
@@ -266,30 +304,6 @@ class CVRP(Problem):
         Args:
             s: [batch size, dim]
         """
-        # result = torch.zeros_like(demands)
-        # for i in range(demands.shape[1]):
-        #     if i == 0:
-        #         result[:, i] = demands[:, i]
-        #     else:
-        #         result[:, i] = result[:, i - 1] + demands[:, i]
-        #         result[demands[:, i] == 0, i] = 0
-
-        # res = torch.flip(result, [1])
-        # result = torch.zeros_like(res)
-        # current_max = torch.zeros(res.shape[0], dtype=res.dtype).to(self.device)
-
-        # for i in range(res.shape[1]):
-        #     # Update the current max unless we encounter a 0
-        #     current_max = torch.where(
-        #         res[:, i] == 0,
-        #         torch.tensor(0, dtype=res.dtype),
-        #         torch.max(current_max, res[:, i]),
-        #     )
-        #     # Assign the current value of current_max to the result
-        #     result[:, i] = current_max
-
-        # f_res = torch.flip(result, [1])
-        # return f_res
         # Detect non-zero values
         mask = demands != 0
 

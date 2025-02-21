@@ -273,6 +273,8 @@ class CVRPCritic(nn.Module):
         self.q_func = nn.Sequential(
             nn.Linear(c, embed_dim, device=device),
             nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim, device=device),
+            nn.ReLU(),
             nn.Linear(embed_dim, 1, device=device),
         )
 
@@ -288,7 +290,7 @@ class CVRPCritic(nn.Module):
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         n_problems, problem_dim, dim = state.shape
 
-        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
+        num_extra_features = dim - 3
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * num_extra_features, dim=-1
         )
@@ -303,7 +305,7 @@ class CVRPCritic(nn.Module):
 
 
 class CVRPActorPairs(SAModel):
-    def __init__(self, embed_dim: int = 32, c: int = 20, device: str = "cpu") -> None:
+    def __init__(self, embed_dim: int = 32, c: int = 22, device: str = "cpu") -> None:
         super().__init__(device)
         self.net = nn.Sequential(
             nn.Linear(c, embed_dim, bias=True, device=device),
@@ -569,5 +571,5 @@ class CVRPActorPairs(SAModel):
         logits = self.net(pair_features)[..., 0]
         logits[mask] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
-        log_probs = torch.log(probs[torch.arange(n_problems), action_idx])
+        log_probs = torch.log(probs.gather(1, action_idx.view(-1, 1)))
         return log_probs[..., 0]

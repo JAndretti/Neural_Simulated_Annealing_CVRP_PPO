@@ -1,5 +1,5 @@
 # Model
-MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250208_184635_2oy6lz5k/"
+MODEL_DIR: "./wandb/Neural_Simulated_Annealing/models/20250219_113936_9k32h1kf/"
 
 # Device
 DEVICE: "cpu"
@@ -30,6 +30,7 @@ C2: 16
 C: 10
 EMBEDDING_DIM: 16
 DEMANDS: True
+PAIRS: True
 
 
 # Visualization

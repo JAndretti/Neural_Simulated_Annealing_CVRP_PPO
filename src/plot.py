@@ -57,7 +57,7 @@ for dim in params["dim"]:
 
         # fig.show()
         # Save the plot in the specified directory
-        fig.write_image(f"pic/final_cost_dim_{dim}_cluster_{cluster}.png")
+        fig.write_image(f"pic/final_cost_dim_{dim}_cluster_{cluster}_baseline.png")
 
 trained_df = pd.read_csv("src/res_model.csv")
 

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from rich import print
 
 
-from model import CVRPActor
+from model import CVRPActor, CVRPActorPairs
 from problem import CVRP
 from sa import sa
 from utils import plot_CVRP
@@ -51,11 +51,14 @@ def load_model(model, folder):
 
 def main():
     # Initialize the actor model
-    actor = CVRPActor(
-        cfg["EMBEDDING_DIM"],
-        cfg["C1"],
-        cfg["C2"],
-    )
+    if cfg["PAIRS"]:
+        actor = CVRPActorPairs()
+    else:
+        actor = CVRPActor(
+            cfg["EMBEDDING_DIM"],
+            cfg["C1"],
+            cfg["C2"],
+        )
     actor = load_model(actor, cfg["MODEL_DIR"])
     base_step = cfg["OUTER_STEPS"]
     set_seed(0)

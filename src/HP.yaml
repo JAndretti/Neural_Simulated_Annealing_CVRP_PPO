@@ -1,18 +1,18 @@
 PROJECT: "Neural_Simulated_Annealing"
-GROUP: "CVRP with advencment"
+GROUP: "CVRP Pairs"
 
 # Wandb
 LOG: False
 
 # Device
-DEVICE: "mps"
+DEVICE: "cpu"
 
 # SA
 INIT_TEMP: 1
 STOP_TEMP: 0.01
 OUTER_STEPS: 100
 INNER_STEPS: 1
-SCHEDULER: "lam"
+SCHEDULER: "step"
 
 #Seed
 SEED: 42
@@ -25,11 +25,10 @@ CLUSTERING: True
 NB_CLUSTERS_MAX: 5
 
 #Model
-C1: 7
-C2: 13
-C: 7
-EMBEDDING_DIM: 16
-DEMANDS: True
+C1: 8
+C2: 14
+C: 12
+EMBEDDING_DIM: 32
 PAIRS: True
 
 #Training

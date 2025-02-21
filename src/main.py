@@ -95,10 +95,6 @@ def main(cfg) -> None:
         device=cfg["DEVICE"],
         params=cfg,
     )
-
-    if cfg["DEMANDS"]:
-        cfg["C1"] = cfg["C"] = 11
-        cfg["C2"] = 17
     # Initialize the actor and critic models
     if cfg["PAIRS"]:
         actor = CVRPActorPairs(device=cfg["DEVICE"])
