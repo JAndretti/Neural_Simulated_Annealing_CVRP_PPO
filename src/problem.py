@@ -280,7 +280,11 @@ class CVRP(Problem):
 
         # Detect group changes
         shift = torch.cat(
-            [torch.zeros((mask.shape[0], 1), dtype=torch.bool), mask[:, :-1]], dim=1
+            [
+                torch.zeros((mask.shape[0], 1), dtype=torch.bool, device=self.device),
+                mask[:, :-1],
+            ],
+            dim=1,
         )
         group_change = mask & ~shift  # Detect the start of new groups
 
