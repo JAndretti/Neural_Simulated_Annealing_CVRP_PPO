@@ -23,8 +23,11 @@ class _HP:
             self.config = yaml.safe_load(f)
         # self.config['TRAIN_ID'] = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
 
-    def __getitem__(self, key):
-        return self.config[key]
+    def __getitem__(self, key, default=None):
+        try:
+            return self.config[key]
+        except KeyError:
+            return default
 
     def __setitem__(self, key, value):
         self.config[key] = value

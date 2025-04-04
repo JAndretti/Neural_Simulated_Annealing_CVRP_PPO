@@ -1,40 +1,38 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple
-
-
+from typing import Dict, Tuple, Optional
 import torch
 import torch.nn.functional as F
+from utils import repeat_to
 
 
-from utils import repeat_to, convert_tensor
-
-
-def greedy_init_batch(demands, capacity):
-    """Vectorized greedy algorithm for initial solution generation.
+def greedy_init_batch(demands: torch.Tensor, capacity: int) -> torch.Tensor:
+    """
+    Vectorized greedy algorithm for initial CVRP solution generation.
 
     Args:
-        demands: Tensor of shape [batch_size, pb_size] representing client demands.
-        capacity: Scalar representing the vehicle capacity.
+        demands: Tensor of shape [batch_size, num_nodes] representing client demands
+        capacity: Vehicle capacity constraint
 
     Returns:
-        routes: Tensor of shape [batch_size, max_route_length, 1] with initial routes.
+        Tensor of shape [batch_size, max_route_length, 1] containing initial routes
+        with depot visits inserted to respect capacity constraints
     """
-    batch_size, pb_size = demands.size()
+    batch_size, num_nodes = demands.size()
 
-    # Initialize tensors
+    # Initialize solution tensor with 40% padding for depot insertions
+    max_route_length = num_nodes + int(num_nodes * 0.40)
     routes = torch.zeros(
-        batch_size,
-        pb_size + int(pb_size * 0.40),  # Add 20% to the maximum route length
-        # to avoid trimming because we add 0 many times
-        # for depot
-        dtype=torch.long,
-        device=demands.device,
-    )  # Maximum route length
-    clients = torch.arange(1, pb_size, device=demands.device).repeat(
-        batch_size, 1
-    )  # [batch_size, pb_size-1]
-    # Shuffle the clients within each batch
+        batch_size, max_route_length, dtype=torch.long, device=demands.device
+    )
+
+    # Prepare client indices (excluding depot 0)
+    clients = torch.arange(1, num_nodes, device=demands.device)
+    clients = clients.repeat(batch_size, 1)  # [batch_size, num_nodes-1]
+
+    # Shuffle clients differently for each problem in batch
     clients = torch.stack([row[torch.randperm(row.size(0))] for row in clients])
+
+    # Add depot (0) at start of each route
     clients = torch.cat(
         [
             torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=demands.device),
@@ -42,44 +40,41 @@ def greedy_init_batch(demands, capacity):
         ],
         dim=1,
     )
-    capacity_left = torch.full(
-        (batch_size,), capacity, device=demands.device
-    )  # Remaining capacity per truck
-    truck_counts = torch.ones(
-        batch_size, device=demands.device
-    )  # Truck counter per batch
-    route_lengths = torch.zeros(
-        batch_size, dtype=torch.long, device=demands.device
-    )  # Route length tracker
 
-    # Loop over clients (vectorized step by step)
-    while (clients >= 0).any():  # While there are unvisited clients
-        # Get the current client for each batch
+    # Initialize tracking variables
+    remaining_capacity = torch.full((batch_size,), capacity, device=demands.device)
+    route_positions = torch.zeros(batch_size, dtype=torch.long, device=demands.device)
+    vehicle_count = torch.ones(batch_size, device=demands.device)
+
+    # Build routes by sequentially assigning clients
+    while (clients >= 0).any():  # While clients remain unassigned
         current_client = clients[:, 0]
 
-        # Check which demands can be satisfied
-        satisfiable = demands[torch.arange(batch_size), current_client] <= capacity_left
-
-        # Update routes for satisfiable demands
-        routes[torch.arange(batch_size), route_lengths] = torch.where(
-            satisfiable, current_client, 0
-        )
-        route_lengths += 1  # Increment route length
-
-        # Deduct satisfied demands from capacity
-        capacity_left = torch.where(
-            satisfiable,
-            capacity_left - demands[torch.arange(batch_size), current_client],
-            capacity_left,
+        # Check if client demand can be satisfied with current capacity
+        can_serve = (
+            demands[torch.arange(batch_size), current_client] <= remaining_capacity
         )
 
-        # Reset capacity and add depot if not satisfiable
-        capacity_left = torch.where(satisfiable, capacity_left, capacity)
-        truck_counts = torch.where(satisfiable, truck_counts, truck_counts + 1)
+        # Update route with client or depot (0)
+        routes[torch.arange(batch_size), route_positions] = torch.where(
+            can_serve, current_client, 0
+        )
+        route_positions += 1
 
-        # Remove the client from the list of unvisited clients
+        # Update remaining capacity
+        remaining_capacity = torch.where(
+            can_serve,
+            remaining_capacity - demands[torch.arange(batch_size), current_client],
+            remaining_capacity,
+        )
+
+        # If can't serve, return to depot and dispatch new vehicle
+        remaining_capacity = torch.where(can_serve, remaining_capacity, capacity)
+        vehicle_count = torch.where(can_serve, vehicle_count, vehicle_count + 1)
+
+        # Remove assigned client from consideration
         clients = torch.where(
-            satisfiable.unsqueeze(1),
+            can_serve.unsqueeze(1),
             torch.cat(
                 [
                     clients[:, 1:],
@@ -89,9 +84,77 @@ def greedy_init_batch(demands, capacity):
             ),
             clients,
         )
-    # Replace all negative numbers in routes with 0
+
+    # Ensure all negative values (padding) are set to depot (0)
     routes = torch.where(routes < 0, torch.tensor(0, device=routes.device), routes)
-    return routes.unsqueeze(-1)  # Add trailing dimension for compatibility
+
+    return routes.unsqueeze(-1)  # Add dimension for compatibility
+
+
+def construct_cvrp_solution(
+    x: torch.Tensor, demands: torch.Tensor, capacity: int = 30
+) -> torch.Tensor:
+    """
+    Constructs a valid CVRP solution from node sequence while respecting
+    capacity constraints.
+
+    Args:
+        x: Tensor of shape [batch_size, num_nodes] representing node visit sequence
+        demands: Tensor of shape [batch_size, num_nodes+1] containing client demands
+        capacity: Maximum vehicle capacity
+
+    Returns:
+        Tensor of shape [batch_size, max_route_length, 1] with depot visits inserted
+        to maintain feasible solutions
+    """
+    x = x.squeeze(-1)  # Remove trailing dimension if present
+    batch_size, num_nodes = demands.shape
+
+    # Initialize solution with padding for depot insertions
+    max_route_length = num_nodes + int(num_nodes * 0.40)
+    routes = torch.zeros(
+        batch_size, max_route_length, dtype=torch.long, device=x.device
+    )
+
+    # Add depot at start of each route
+    x = torch.cat(
+        [torch.zeros(batch_size, 1, dtype=torch.long, device=x.device), x], dim=1
+    )
+
+    # Get demands in current route order
+    ordered_demands = torch.gather(demands, 1, x)
+
+    # Initialize tracking variables
+    remaining_capacity = torch.full((batch_size,), capacity, device=x.device)
+    route_pos = torch.zeros(batch_size, dtype=torch.long, device=x.device)
+
+    for i in range(num_nodes):
+        current_client = x[:, i]
+        can_serve = ordered_demands[:, i] <= remaining_capacity
+
+        # Insert client or depot based on capacity
+        routes[torch.arange(batch_size), route_pos] = torch.where(
+            can_serve, current_client, 0
+        )
+        route_pos += 1
+
+        # Update capacity
+        remaining_capacity = torch.where(
+            can_serve, remaining_capacity - ordered_demands[:, i], remaining_capacity
+        )
+
+        # If capacity exceeded, return to depot and reset
+        remaining_capacity = torch.where(
+            can_serve, remaining_capacity, capacity - ordered_demands[:, i]
+        )
+
+        # Insert depot if needed
+        routes[torch.arange(batch_size), route_pos] = torch.where(
+            can_serve, 0, current_client
+        )
+        route_pos += (~can_serve).long()
+
+    return routes.unsqueeze(-1)
 
 
 class Problem(ABC):
@@ -133,15 +196,26 @@ class Problem(ABC):
     def to_state(
         self, x: torch.Tensor, temp: torch.Tensor, time: torch.Tensor
     ) -> torch.Tensor:
-        """Concatenate state encoding with x and repeat temp dynamically."""
+        """
+        Construct full state representation by combining:
+        - Current solution (x)
+        - Problem features (state_encoding)
+        - Demand percentages
+        - Route costs
+        - Temperature and time parameters
+        """
         padding = max(0, x.size(1) - self.state_encoding.size(1))
-        self_state_encoding = F.pad(self.state_encoding, (0, 0, 0, padding))
-        components = [x, self_state_encoding]
+        padded_features = F.pad(self.state_encoding, (0, 0, 0, padding))
 
-        components.extend(self.get_percentage_demands(x))
-        components.extend([self.cost_per_route(x)])
-        components.extend([repeat_to(temp, x), repeat_to(time, x)])
-        # components.extend(repeat_to(c, temp.size(1)) for c in components)
+        components = [
+            x,
+            padded_features,
+            *self.get_percentage_demands(x),
+            self.cost_per_route(x),
+            repeat_to(temp, x),
+            repeat_to(time, x),
+        ]
+
         return torch.cat(components, -1)
 
     def from_state(self, state: torch.Tensor) -> Tuple[torch.Tensor, ...]:
@@ -152,7 +226,9 @@ class Problem(ABC):
 
 
 class CVRP(Problem):
-    x_dim = 1
+    """Capacitated Vehicle Routing Problem implementation."""
+
+    x_dim = 1  # Dimension for solution representation
 
     def __init__(
         self,
@@ -160,82 +236,149 @@ class CVRP(Problem):
         n_problems: int = 256,
         capacity: int = 40,
         device: str = "cpu",
-        params: str = {},
+        params: Optional[Dict] = None,
     ):
-        """Initialize CVRP.
+        """
+        Initialize CVRP instance.
 
         Args:
-            dim: num items
-            n_problems: batch size
-            params: {'weight': torch.Tensor}
+            dim: Number of client nodes (excluding depot)
+            n_problems: Batch size for parallel processing
+            capacity: Vehicle capacity constraint
+            device: Computation device (cpu/cuda)
+            params: Configuration parameters including:
+                   - HEURISTIC: 'swap' or 'two_opt'
+                   - CLUSTERING: Whether to use clustered instances
+                   - NB_CLUSTERS_MAX: Max clusters if clustering enabled
         """
         super().__init__(device)
-        self.dim = dim
-        self.n_problems = n_problems
-        self.capacity = capacity
-        self.params = params
-        self.clustering = self.params["CLUSTERING"]
-        self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
+        self.params = params or {}
+        self._setup_heuristic()
+        self._init_problem_parameters(dim, n_problems, capacity)
 
-    def set_params(self, params: dict = None) -> None:
-        """Set params.
+    def _setup_heuristic(self):
+        """Initialize solution modification heuristic."""
+        heuristic = self.params["HEURISTIC"]
+        if heuristic == "swap":
+            self.heuristic = self.swap
+        elif heuristic == "two_opt":
+            self.heuristic = self.two_opt
+        elif heuristic == "mix":
+            self.heuristic = self.mixed_heuristic
+        else:
+            raise ValueError(f"Unsupported heuristic: {heuristic}")
 
-        Args:
-            params: Dictionary containing 'coords' and 'demands'
-        """
-        if params["coords"] is not None:
+    def _init_problem_parameters(self, dim, n_problems, capacity):
+        """Initialize problem size and constraints."""
+        if self.params["name"] is not None:
+            # Load from predefined problem
+            self.n_problems = 1
+            self.dim = self.params["dimension"] - 1
+            self.n_problems = 1
+            self.capacity = self.params["capacity"]
+            self.clustering = False
+        else:
+            # Initialize random problem
+            self.dim = dim
+            self.n_problems = n_problems
+            self.capacity = capacity
+            self.clustering = self.params["CLUSTERING"]
+            if self.clustering:
+                self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
+
+    def set_params(self, params: Dict) -> None:
+        """Update problem coordinates and demands."""
+        if "coords" in params:
             self.coords = params["coords"]
-        if params["demands"] is not None:
+        if "demands" in params:
             self.demands = params["demands"]
 
-    def generate_params(self, mode: str = "train") -> Dict[str, torch.Tensor]:
-        """Generate random coordinates in the unit square.
+    def generate_params(
+        self, mode: str = "train", pb: bool = False
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Generate problem instances with optional clustering.
+
+        Args:
+            mode: 'train' or 'test' (affects random seed)
+            pb: Whether to load predefined problem
 
         Returns:
-            coords [batch size, num problems, 2]
+            Dictionary containing:
+            - coords: Node coordinates [batch, num_nodes+1, 2]
+            - demands: Node demands [batch, num_nodes+1] (depot demand=0)
         """
         if mode == "test":
-            self.manual_seed(0)
+            self.manual_seed(0)  # Fixed seed for reproducibility
+
+        if pb:
+            return self._load_predefined_problem()
+
         if self.clustering:
-            # Generate 5 centers for each problem
-            cluster_centers = torch.rand(
-                self.n_problems,
-                self.nb_clusters_max,
-                2,
-                device=self.device,
-                generator=self.generator,
-            )  # Size (n_problems, self.nb_clusters_max, 2)
-
-            # Assigne every node to a cluster
-            cluster_assignments = torch.randint(
-                0,
-                self.nb_clusters_max,
-                (self.n_problems, self.dim + 1),
-                device=self.device,
-                generator=self.generator,
-            )  # size (n_problems, dim + 1)
-
-            # Add some noise to the cluster centers
-            coords = cluster_centers[
-                torch.arange(self.n_problems)[:, None], cluster_assignments
-            ] + 0.05 * torch.randn(
-                self.n_problems,
-                self.dim + 1,
-                2,
-                device=self.device,
-                generator=self.generator,
-            )
-
-            # Clamp the coordinates to the unit square
-            coords = torch.clamp(coords, 0, 1)
+            return self._generate_clustered_instances()
         else:
-            coords = torch.rand(
-                self.n_problems,
-                self.dim + 1,
-                2,
-                device=self.device,
-                generator=self.generator,
-            )
+            return self._generate_random_instances()
+
+    def _load_predefined_problem(self) -> Dict[str, torch.Tensor]:
+        """Load problem from predefined parameters."""
+        coords = (
+            torch.from_numpy(self.params["node_coord_normalized"])
+            .unsqueeze(0)
+            .to(self.device, dtype=torch.float32)
+        )
+        demands = torch.from_numpy(self.params["demand"]).unsqueeze(0).to(self.device)
+        demands[:, 0] = 0  # Depot has no demand
+        return {"coords": coords, "demands": demands}
+
+    def _generate_clustered_instances(self) -> Dict[str, torch.Tensor]:
+        """Generate problems with clustered customer locations."""
+        # Create cluster centers
+        centers = torch.rand(
+            self.n_problems,
+            self.nb_clusters_max,
+            2,
+            device=self.device,
+            generator=self.generator,
+        )
+
+        # Assign nodes to clusters
+        cluster_assign = torch.randint(
+            0,
+            self.nb_clusters_max,
+            (self.n_problems, self.dim + 1),
+            device=self.device,
+            generator=self.generator,
+        )
+
+        # Generate coordinates with cluster-based noise
+        coords = centers[torch.arange(self.n_problems)[:, None], cluster_assign]
+        coords += 0.05 * torch.randn(
+            self.n_problems,
+            self.dim + 1,
+            2,
+            device=self.device,
+            generator=self.generator,
+        )
+        coords = torch.clamp(coords, 0, 1)  # Keep in unit square
+
+        # Generate demands
+        demands = self._generate_demands()
+        return {"coords": coords, "demands": demands}
+
+    def _generate_random_instances(self) -> Dict[str, torch.Tensor]:
+        """Generate completely random problem instances."""
+        coords = torch.rand(
+            self.n_problems,
+            self.dim + 1,
+            2,
+            device=self.device,
+            generator=self.generator,
+        )
+        demands = self._generate_demands()
+        return {"coords": coords, "demands": demands}
+
+    def _generate_demands(self) -> torch.Tensor:
+        """Generate random customer demands (depot demand=0)."""
         demands = torch.randint(
             1,
             10,
@@ -243,289 +386,276 @@ class CVRP(Problem):
             device=self.device,
             generator=self.generator,
         )
-        demands[:, 0] = 0
-        return {"coords": coords, "demands": demands}
+        demands[:, 0] = 0  # Depot has no demand
+        return demands
 
-    def cost(self, s: torch.Tensor) -> torch.Tensor:
-        """Compute Euclidean tour lengths from city permutations
+    def cost(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Compute total route length for given solution.
 
         Args:
-            s: [batch size, dim]
-        """
-        # Edge lengths
-        edge_lengths = self.get_edge_lengths_in_tour(s)
-        return torch.sum(edge_lengths, -1)
-
-    def cost_per_route(self, s: torch.Tensor) -> torch.Tensor:
-        """
-        Calculate the cost per route for a given tensor of routes.
-
-        This function computes the cost per route by first calculating the edge lengths
-        in the tour, then summing these lengths. It creates a mask to identify non-zero
-        elements in the input tensor `s`, detects changes in groups, and assigns unique
-        group identifiers. It then calculates the sum of edge lengths per group and
-        propagates these sums to the corresponding indices. Finally, it normalizes the
-        output by the total cost.
-
-        Args:
-            s (torch.Tensor): A tensor representing the routes.
+            solution: Tensor [batch, route_length, 1] representing routes
 
         Returns:
-            torch.Tensor: A tensor containing the normalized cost per route.
+            Tensor [batch] containing total distance for each solution
         """
-        edge_lengths = self.get_edge_lengths_in_tour(s)
-        total_cost = torch.sum(edge_lengths, -1)
-        # Create a mask for non-zero elements in s
-        mask = s.squeeze(-1) != 0
+        return torch.sum(self.get_edge_lengths_in_tour(solution), -1)
 
-        # Detect group changes
-        shift = torch.cat(
-            [
-                torch.zeros((mask.shape[0], 1), dtype=torch.bool, device=self.device),
-                mask[:, :-1],
-            ],
-            dim=1,
-        )
-        group_change = mask & ~shift  # Detect the start of new groups
-
-        # Create unique group identifiers
-        group_ids = torch.cumsum(group_change, dim=1) * mask
-
-        # Calculate the sum of values per group
-        sums = torch.zeros_like(edge_lengths)
-        sums.scatter_add_(1, group_ids, edge_lengths)
-
-        # Propagate the sums to the corresponding indices
-        output = sums.gather(1, group_ids) * mask
-
-        return ((output) / total_cost.view(-1, 1)).unsqueeze(-1)
-
-    def cost_demands(
-        self, s: torch.Tensor, demands: torch.Tensor
-    ) -> torch.Tensor:  # TODO to long
-        """Compute sum of demands for tours
+    def cost_per_route(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Compute normalized cost contribution per route segment.
 
         Args:
-            s: [batch size, dim]
-        """
-        # Detect non-zero values
-        mask = demands != 0
-
-        # Create a marker for group breaks (when the difference
-        # between adjacent indices > 1)
-        shift = torch.cat(
-            [
-                torch.zeros(
-                    (demands.shape[0], 1), dtype=torch.bool, device=self.device
-                ),
-                mask[:, :-1],
-            ],
-            dim=1,
-        )
-        group_change = mask & ~shift  # Start of new groups
-
-        # Assign a unique group identifier (cumsum creates group labels)
-        group_ids = torch.cumsum(group_change, dim=1) * mask
-
-        # Sum by group
-        sums = torch.zeros_like(demands)
-        sums.scatter_add_(1, group_ids, demands)
-
-        # Propagate summed values within their respective groups
-        output = sums.gather(1, group_ids)
-
-        return output
-
-    def update(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        """Silly city swap
-
-        Args:
-            s: perm vector [batch size, coords]
-            a: cities to swap ([batch size], [batch size])
-        """
-        return self.swap(s, a).long()
-
-    def swap(self, x: torch.Tensor, a: torch.Tensor):
-        """
-        Vectorizes the inversion of values in `x` at the indices specified in `a`
-        row by row.
-
-        Args:
-            x (torch.Tensor): A tensor of shape [n, dim, 1].
-            a (torch.Tensor): A tensor of shape [n, 2] containing the indices to swap
-            for each row of `x`.
+            solution: Tensor [batch, route_length, 1] representing routes
 
         Returns:
-            torch.Tensor: The tensor `x` with the specified swaps applied.
+            Tensor [batch, route_length, 1] with normalized route costs
         """
-        new_x = x.clone()  # To avoid modifying the original tensor
+        edge_lengths = self.get_edge_lengths_in_tour(solution)
+        total_cost = torch.sum(edge_lengths, -1, keepdim=True)
 
-        # Row indices
-        rows = torch.arange(new_x.size(0)).unsqueeze(1)  # Shape [n, 1]
+        # Create route segment masks
+        mask = solution.squeeze(-1) != 0
+        segment_start = mask & ~torch.cat(
+            [torch.zeros_like(mask[:, :1]), mask[:, :-1]], dim=1
+        )
 
-        # Column indices specified by `a`
-        idx1 = a[:, 0].unsqueeze(1)  # Shape [n]
-        idx2 = a[:, 1].unsqueeze(1)  # Shape [n]
+        # Compute segment costs
+        segment_ids = torch.cumsum(segment_start, 1) * mask
+        segment_sums = torch.zeros_like(edge_lengths)
+        segment_sums.scatter_add_(1, segment_ids, edge_lengths)
+        route_costs = segment_sums.gather(1, segment_ids) * mask
 
-        # Extract values at the indices to swap
-        temp = new_x[rows, idx1].clone()  # Shape [n, 1]
-        new_x[rows, idx1] = new_x[rows, idx2]
-        new_x[rows, idx2] = temp
+        return (route_costs / total_cost).unsqueeze(-1)
 
-        return new_x
+    def update(self, solution: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """
+        Modify solution by applying heuristic action.
+
+        Args:
+            solution: Current solution tensor [batch, route_length, 1]
+            action: Pair of indices to modify [batch, 2]
+
+        Returns:
+            New solution after applying heuristic
+        """
+        # Remove depot visits for processing
+        mask = solution.squeeze(-1) != 0
+        compact_sol = torch.stack([s[m] for s, m in zip(solution, mask)])
+
+        # Apply selected heuristic
+        modified_sol = self.heuristic(compact_sol, action).long()
+
+        # Rebuild valid CVRP solution with depot visits
+        return construct_cvrp_solution(modified_sol, self.demands, self.capacity)
+
+    def swap(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Swap two nodes in the solution.
+
+        Args:
+            solution: Tensor [batch, num_nodes, 1]
+            indices: Tensor [batch, 2] containing swap indices
+
+        Returns:
+            Solution with swapped nodes
+        """
+        new_solution = solution.clone()
+        batch_idx = torch.arange(solution.size(0))[:, None]
+        idx1, idx2 = indices[:, 0, None].to(torch.int64), indices[:, 1, None].to(
+            torch.int64
+        )
+
+        # Perform swap
+        temp = new_solution[batch_idx, idx1].clone()
+        new_solution[batch_idx, idx1] = new_solution[batch_idx, idx2]
+        new_solution[batch_idx, idx2] = temp
+
+        return new_solution
+
+    def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Perform 2-opt move by reversing segment between indices.
+
+        Args:
+            solution: Tensor [batch, num_nodes, 1]
+            indices: Tensor [batch, 2] containing segment endpoints
+
+        Returns:
+            Solution with reversed segment
+        """
+        left = torch.minimum(indices[:, 0], indices[:, 1])
+        right = torch.maximum(indices[:, 0], indices[:, 1])
+
+        # Create reversed indices for the segment
+        idx = torch.arange(solution.size(1), device=solution.device)
+        idx = idx.repeat(solution.size(0), 1)
+        reverse_mask = (idx >= left[:, None]) & (idx < right[:, None])
+        reversed_idx = left[:, None] + right[:, None] - 1 - idx
+        idx = torch.where(reverse_mask, reversed_idx, idx).to(torch.int64)
+
+        return torch.gather(solution, 1, idx.unsqueeze(-1))
+
+    def mixed_heuristic(
+        self, solution: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Apply either swap or two_opt based on the third value in action.
+
+        Args:
+            solution: Tensor [batch, num_nodes, 1]
+            action: Tensor [batch, 3] where:
+                   - action[:, 0:2] are the indices
+                   - action[:, 2] determines heuristic (swap if <0.5, two_opt otherwise)
+
+        Returns:
+            Modified solution
+        """
+        indices = action[:, :2]
+        heuristic_choice = action[:, 2] >= 0.5
+
+        # Apply swap where choice < 0.5
+        swap_solution = self.swap(solution, indices)
+        # Apply two_opt where choice >= 0.5
+        two_opt_solution = self.two_opt(solution, indices)
+
+        # Combine results based on heuristic choice
+        return torch.where(
+            heuristic_choice.unsqueeze(-1).unsqueeze(-1),
+            two_opt_solution,
+            swap_solution,
+        )
 
     @property
     def state_encoding(self) -> torch.Tensor:
+        """Node coordinates as static problem features."""
         return self.coords
 
-    def get_coords(self, s: torch.Tensor) -> torch.Tensor:
-        """Get coords from tour permutation."""
-        s_expanded = s.unsqueeze(-1).expand(-1, -1, self.coords.size(-1))
-        return torch.gather(self.coords, 1, s_expanded)
+    def get_coords(self, solution: torch.Tensor) -> torch.Tensor:
+        """Get coordinates in solution order."""
+        return torch.gather(
+            self.coords, 1, solution.expand(-1, -1, self.coords.size(-1))
+        )
 
-    def get_demands(self, s: torch.Tensor) -> torch.Tensor:
-        """Get coords from tour permutation."""
-        return torch.gather(self.demands, 1, s)
+    def get_demands(self, solution: torch.Tensor) -> torch.Tensor:
+        """Get demands in solution order."""
+        return torch.gather(self.demands, 1, solution.squeeze(-1))
 
-    def generate_init_x(self):
-        """Generate initial greedy solutions for all batch demands."""
-        perm = greedy_init_batch(self.demands, self.capacity).to(self.device)
-        return perm
+    def generate_init_x(self) -> torch.Tensor:
+        """Generate initial solutions using greedy algorithm."""
+        return greedy_init_batch(self.demands, self.capacity).to(self.device)
 
     def generate_init_state(self) -> torch.Tensor:
-        """State encoding has dims
+        """Generate initial state including coordinates."""
+        solution = self.generate_init_x()
+        return torch.cat([solution, self.state_encoding], -1)
 
-        [state enc] = [batch size, num items, concat]
+    def get_edge_lengths_in_tour(self, solution: torch.Tensor) -> torch.Tensor:
         """
-        perm = self.generate_init_x()
-        return torch.cat([perm, self.state_encoding], -1)
-
-    def get_edge_offsets_in_tour(self, s: torch.Tensor) -> torch.Tensor:
-        """Compute vector to right city in tour
+        Compute Euclidean distances between consecutive nodes in solution.
 
         Args:
-            s: [batch size, dim]
+            solution: Tensor [batch, num_nodes, 1]
+
         Returns:
-            [batch size, dim, 2]
+            Tensor [batch, num_nodes] of inter-node distances
         """
-        # Gather dataset in order of tour
-        d = self.get_coords(s[..., 0])
-        d_roll = torch.roll(d, -1, 1)
-        # Edge lengths
-        return d_roll - d
+        coords = self.get_coords(solution)
+        next_coords = torch.roll(coords, -1, 1)
+        return (coords - next_coords).norm(p=2, dim=-1)
 
-    def get_edge_lengths_in_tour(self, s: torch.Tensor) -> torch.Tensor:
-        """Compute distance to right city in tour
+    def _compute_route_demands(
+        self, demands: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute total demands per route segment."""
+        # Identify route segments
+        mask = demands != 0
+        segment_start = mask & ~torch.cat(
+            [torch.zeros_like(mask[:, :1]), mask[:, :-1]], dim=1
+        )
 
-        Args:
-            s: [batch size, dim, 1]
-        Returns:
-            [batch size, dim]
+        # Compute segment demands
+        segment_ids = torch.cumsum(segment_start, 1) * mask
+        segment_demands = torch.zeros_like(demands)
+        segment_demands.scatter_add_(1, segment_ids, demands)
+
+        return segment_demands.gather(1, segment_ids), segment_ids
+
+    def get_percentage_demands(
+        self, solution: torch.Tensor
+    ) -> Tuple[torch.Tensor, ...]:
         """
-        # Edge offsets
-        offset = self.get_edge_offsets_in_tour(s)
-        # Edge lengths
-        return torch.sqrt(torch.sum(offset**2, -1))
-
-    def get_neighbors_in_tour(self, s: torch.Tensor) -> torch.Tensor:
-        """Return distances to neighbors in tour.
-
-        Args:
-            s: [batch size, dim, 1] vector
+        Compute demand-related percentages:
+        1. Node demand as fraction of route demand
+        2. Route demand as fraction of vehicle capacity
+        3. Node demand as fraction of vehicle capacity
         """
-        right_distance = self.get_edge_lengths_in_tour(s)
-        left_distance = torch.roll(right_distance, 1, 1)
-        return torch.stack([right_distance, left_distance], -1)
+        demands = self.get_demands(solution)
+        route_demands, route_ids = self._compute_route_demands(demands)
 
-    def get_arg_demands(self, x: torch.Tensor) -> torch.Tensor:
-        """Return demands, grp, max route"""
-        dem = self.get_demands(x[..., 0])
-        agg = self.cost_demands(x, dem)
-        grp = convert_tensor(agg)
-        return dem, agg, grp
-
-    def get_percentage_demands(self, x: torch.Tensor) -> torch.Tensor:
-        """Return the percentage of the demands per nodes."""
-        self.dem, self.agg, self.grp = self.get_arg_demands(x)
-
-        per_nodes = torch.nan_to_num(self.dem / self.agg, nan=0.0)
-        per_routes = self.agg / self.capacity
-        per_nodes_routes = self.dem / self.capacity
+        node_pct = torch.nan_to_num(demands / route_demands, nan=0.0)
+        route_pct = route_demands / self.capacity
+        node_cap_pct = route_ids / self.capacity
         return (
-            per_nodes.unsqueeze(-1),
-            per_routes.unsqueeze(-1),
-            per_nodes_routes.unsqueeze(-1),
+            node_pct.unsqueeze(-1),
+            route_pct.unsqueeze(-1),
+            node_cap_pct.unsqueeze(-1),
         )
 
-    def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
-        """Return all allowed permutations from a node."""
-        # Create a mask for the conditions
-        mask1 = (
-            (self.dem > 0)
-            # & (
-            #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-            #     != node
-            # )
-            & (self.grp == self.grp.gather(1, node))
-        )
-        mask2 = (
-            (self.dem > 0)
-            # & (
-            #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-            #     != node
-            # )
-            & (self.agg + self.dem.gather(1, node) - self.dem - self.capacity <= 0)
-            & (
-                self.agg.gather(1, node)
-                + self.dem
-                - self.dem.gather(1, node)
-                - self.capacity
-                <= 0
-            )
-        )
+    # def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor)
+    # -> torch.Tensor:
+    #     """Return all allowed permutations from a node."""
+    #     # Create a mask for the conditions
+    #     mask1 = (
+    #         (self.dem > 0)
+    #         # & (
+    #         #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+    #         #     != node
+    #         # )
+    #         & (self.grp == self.grp.gather(1, node))
+    #     )
+    #     mask2 = (
+    #         (self.dem > 0)
+    #         # & (
+    #         #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
+    #         #     != node
+    #         # )
+    #         & (self.agg + self.dem.gather(1, node) - self.dem - self.capacity <= 0)
+    #         & (
+    #             self.agg.gather(1, node)
+    #             + self.dem
+    #             - self.dem.gather(1, node)
+    #             - self.capacity
+    #             <= 0
+    #         )
+    #     )
 
-        # Combine the masks
-        return mask1 | mask2
+    #     # Combine the masks
+    #     return mask1 | mask2
 
-    def get_permutable_pairs(self, x: torch.Tensor, indices: Tuple) -> torch.Tensor:
-        """
-        Returns a boolean tensor indicating which pairs of nodes are swappable.
+    # def get_permutable_pairs(self, x: torch.Tensor, indices: Tuple) -> torch.Tensor:
+    #     """
+    #     Returns a boolean tensor indicating which pairs of nodes are swappable.
 
-        Args:
-            x (torch.Tensor): Tensor representing the solutions of the current problems.
+    #     Args:
+    #         x (torch.Tensor): Tensor representing the solutions of the current
+    #   problems.
 
-        Returns:
-            torch.Tensor: A boolean tensor of size (B, N, N) where
-            True indicates that (i, j) is swappable.
-        """
-        batch_size = x.shape[0]
+    #     Returns:
+    #         torch.Tensor: A boolean tensor of size (B, N, N) where
+    #         True indicates that (i, j) is swappable.
+    #     """
+    #     dem_i = self.dem.gather(1, indices[0].unsqueeze(0))
+    #     dem_j = self.dem.gather(1, indices[1].unsqueeze(0))
+    #     grp_i = self.grp.gather(1, indices[0].unsqueeze(0))
+    #     grp_j = self.grp.gather(1, indices[1].unsqueeze(0))
 
-        # Initialize an output tensor (B, N+1, N+1)
-        permutable = torch.zeros(
-            (batch_size, indices[0].size(0)),
-            dtype=torch.bool,
-            device=x.device,
-        )
-        colonne = 0
-        # Iterate over all pairs of nodes
-        for i, j in zip(indices[0], indices[1]):
+    #     # Calcul vectorisé
+    #     valid_demand = (dem_i > 0) & (dem_j > 0)
+    #     same_group = grp_i == grp_j
+    #     valid_capacity = ((self.agg + dem_j - dem_i) <= self.capacity) & (
+    #         (self.agg.gather(1, indices[1].unsqueeze(0)) + dem_i - dem_j)
+    #         <= self.capacity
+    #     )
 
-            # Condition 1: Both nodes must have a demand > 0
-            valid_demand = (self.dem[:, i] > 0) & (self.dem[:, j] > 0)
-
-            # Condition 2: Nodes must belong to the same group
-            same_group = self.grp[:, i] == self.grp[:, j]
-
-            # Condition 3: Check the capacity constraint after swapping
-            valid_capacity = (
-                self.agg[:, i] + self.dem[:, j] - self.dem[:, i] <= self.capacity
-            ) & (self.agg[:, j] + self.dem[:, i] - self.dem[:, j] <= self.capacity)
-
-            # A swap is possible if all conditions are met
-            can_swap = valid_demand & (same_group | valid_capacity)
-
-            # Append the result to the permutable tensor
-            permutable[:, colonne] = can_swap
-            colonne += 1
-
-        return permutable
+    #     return valid_demand & (same_group | valid_capacity)

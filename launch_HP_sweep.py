@@ -10,7 +10,7 @@ from time import sleep
 # ----------------------------------------------------
 # Global Parameters
 # ----------------------------------------------------
-GPU_AVAILABLES = [0]
+GPU_AVAILABLES = [0, 1]
 
 SWEEP_MODE = "random"  # grid, random
 

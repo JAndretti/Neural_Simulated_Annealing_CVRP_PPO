@@ -1,51 +1,49 @@
+# =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"
-GROUP: "CVRP Pairs"
+GROUP: "CVRP 2opt_swap_mix"
+LOG: True                  # Enable WandB logging
 
-# Wandb
-LOG: False
+# =============== Hardware & Setup ===============
+DEVICE: "cpu"              # cpu/cuda/mps
+SEED: 42                   # Random seed
 
-# Device
-DEVICE: "cpu"
+# =============== CVRP Problem ===============
+PROBLEM_DIM: 20            # Number of nodes
+MAX_LOAD: 30               # Vehicle capacity
+N_PROBLEMS: 256            # Parallel instances
+CLUSTERING: False          # Enable clustering
+NB_CLUSTERS_MAX: 5         # Max clusters if enabled
+HEURISTIC: "mix"           # Local search method
 
-# SA
-INIT_TEMP: 1
-STOP_TEMP: 0.01
-OUTER_STEPS: 100
-INNER_STEPS: 1
-SCHEDULER: "step"
+# =============== Model Architecture ===============
+EMBEDDING_DIM: 32          # Embedding dimension
+C1: 8                      # Actor layer 1 channels
+C2: 14                     # Actor layer 2 channels
+C: 12                      # Critic layer channels
+PAIRS: True                # Pair model 
 
-#Seed
-SEED: 42
+# =============== Training ===============
+N_EPOCHS: 500              # Total training epochs
+LR: 0.0001                 # Learning rate
+WEIGHT_DECAY: 0.01         # L2 regularization
+BATCH_SIZE: 256            # Training batch size
 
-#CVRP
-PROBLEM_DIM: 20
-MAX_LOAD: 30
-N_PROBLEMS: 256
-CLUSTERING: True
-NB_CLUSTERS_MAX: 5
+# =============== Simulated Annealing ===============
+INIT_TEMP: 1               # Starting temperature
+STOP_TEMP: 0.01            # Final temperature
+OUTER_STEPS: 100           # Temperature steps
+INNER_STEPS: 1             # Steps per temperature
+SCHEDULER: "lam"           # Cooling schedule
 
-#Model
-C1: 8
-C2: 14
-C: 12
-EMBEDDING_DIM: 32
-PAIRS: True
-
-#Training
-LR: 0.0001
-WEIGHT_DECAY: 0.01
-N_EPOCHS: 500
-BATCH_SIZE: 512
-
-#Algo
-METHOD: "ppo"
-
-#PPO
-PPO_EPOCHS: 10
-TRACE_DECAY: 0.9
-EPS_CLIP: 0.25
-LOSS: min_cost
-REWARD: immediate
-GAMMA: 0.9
-
-OR_TOOLS_TIME: 1
+# =============== PPO Algorithm ===============
+METHOD: "ppo"              # Training algorithm
+PPO_EPOCHS: 10             # PPO optimization steps
+TRACE_DECAY: 0.9           # GAE lambda parameter
+EPS_CLIP: 0.25             # Policy clip range
+LOSS: "min_cost"           # Optimization objective
+REWARD: "immediate"        # Reward calculation
+GAMMA: 0.9                 # Discount factor
+N_STEP: 5                  # Multi-step returns
+ENT_COEF: 0.01             # Entropy coefficient
+TARGET_KL: 0.01            # Target KL divergence
+GP_LAMBDA: 0.01            # Gradient penalty weight

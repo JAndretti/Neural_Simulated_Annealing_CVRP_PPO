@@ -8,3 +8,7 @@ rich
 matplotlib
 kaleido
 plotly
+vrplib
+pandas
+seaborn
+scipy

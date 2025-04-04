@@ -1,17 +1,10 @@
-INIT_TEMP:
-- 1000
+N_STEP: 
+- 5
+- 30
+- 50
 - 100
-- 1
 
-OUTER_STEPS: 
-- 100
-- 1000
-
-SCHEDULER:
-- "step"
-- "cyclic"
-
-
-CLUSTERING: 
-- True
-- False
+HEURISTIC:
+- "two_opt"
+- "swap"
+- "mix"

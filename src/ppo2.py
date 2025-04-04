@@ -1,17 +1,29 @@
 from typing import Tuple
-import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
 from model import SAModel
-from replay import Replay, Transition
+from replay import ReplayBuffer, Transition
 from problem import CVRP
+
+
+def gradient_penalty(critic, states):
+    states.requires_grad_(True)
+    values = critic(states)
+    gradients = torch.autograd.grad(
+        outputs=values,
+        inputs=states,
+        grad_outputs=torch.ones_like(values),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    return ((gradients.norm(2.0, dim=1) - 1) ** 2).mean()
 
 
 def ppo(
     actor: SAModel,
     critic: nn.Module,
-    replay: Replay,
+    replay: ReplayBuffer,
     actor_opt: Optimizer,
     critic_opt: Optimizer,
     cfg: dict,
@@ -42,11 +54,14 @@ def ppo(
     eps_clip = cfg["EPS_CLIP"]  # Clipping range for policy ratio
     batch_size = cfg["BATCH_SIZE"]  # Mini-batch size
     n_problems = cfg["N_PROBLEMS"]  # Number of parallel problem instances
+    ent_coef = cfg["ENT_COEF"]
     problem_dim = int(
         cfg["PROBLEM_DIM"] + (cfg["PROBLEM_DIM"] * 0.40) + 1
     )  # State dimension
+    n_step = cfg["N_STEP"]  # Number of steps for n-step returns
+    gp_lam = cfg["GP_LAMBDA"]  # Gradient penalty lambda
+    target_KL = cfg["TARGET_KL"]  # Target KL divergence for adaptive clipping
     device = cfg["DEVICE"]  # Device (CPU/GPU)
-
     # Set networks to training mode
     actor.train()
     critic.train()
@@ -60,6 +75,8 @@ def ppo(
         # Stack and reshape tensors
         state = torch.stack(batch.state).view(nt * n_problems, problem_dim, -1)
         action = torch.stack(batch.action).detach().view(nt * n_problems, -1)
+        batch_gamma = [torch.tensor(g) for g in batch.gamma]
+        gamma = torch.stack(batch_gamma).unsqueeze(-1).repeat(1, n_problems)
         next_state = (
             torch.stack(batch.next_state)
             .detach()
@@ -72,69 +89,63 @@ def ppo(
         next_state_values = critic(next_state).view(nt, n_problems, 1)
 
         # 2. Compute returns and advantages using Generalized Advantage Estimation (GAE)
-        rewards_to_go = torch.zeros(
-            (nt, n_problems, 1), device=device
-        )  # R_t = cumulative returns
-        advantages = torch.zeros((nt, n_problems, 1), device=device)  # A_t = advantages
-        discounted_reward = torch.zeros(
-            (n_problems, 1), device=device
-        )  # Temporary storage
-        advantage = torch.zeros((n_problems, 1), device=device)  # Temporary storage
+        advantages = torch.zeros((nt, n_problems, 1), device=device)
+        rewards_to_go = torch.zeros((nt, n_problems, 1), device=device)
 
-        # Backward pass through time to compute returns and advantages
-        for i, reward, gamma in zip(
-            reversed(np.arange(len(transitions))),
-            reversed(batch.reward),
-            reversed(batch.gamma),
-        ):
-            if gamma == 0:  # Reset at episode boundaries
-                discounted_reward.zero_()
-                advantage.zero_()
+        # Process each problem instance separately
+        for problem_idx in range(n_problems):
+            # Get the sequence for this problem
+            problem_rewards = torch.stack([t.reward[problem_idx] for t in transitions])
+            problem_values = state_values[:, problem_idx]
+            problem_next_values = next_state_values[:, problem_idx]
+            problem_gammas = gamma[:, problem_idx]
 
-            # Compute return: R_t = r_t + γ * R_{t+1}
-            discounted_reward = reward + (gamma * discounted_reward)
+            # Find episode boundaries
+            episode_ends = (problem_gammas == 0).nonzero().view(-1).cpu().numpy()
+            episode_starts = [0] + (episode_ends[:-1] + 1).tolist()
 
-            # Compute TD error: δ_t = r_t + γ * V(s_{t+1}) - V(s_t)
-            td_error = reward + gamma * next_state_values[i, ...] - state_values[i, ...]
+            # Process each episode separately
+            for start, end in zip(episode_starts, episode_ends):
 
-            # Compute advantage: A_t = δ_t + γλ * A_{t+1}
-            advantage = td_error + gamma * trace_decay * advantage
+                episode_len = end - start + 1
+                ep_rewards = problem_rewards[start : end + 1]
+                ep_values = problem_values[start : end + 1]
+                ep_next_values = problem_next_values[start : end + 1]
+                ep_gammas = problem_gammas[start]  # Utiliser les gammas individuels
+                last_advantage = 0
 
-            rewards_to_go[i, ...] = discounted_reward
-            advantages[i, ...] = advantage
+                # Compute n-step returns and advantages
+                for t in reversed(range(episode_len)):
+                    end_idx = min(t + n_step, episode_len)
+                    # Compute n-step returns
+                    rewards_to_go[start + t, problem_idx] = sum(
+                        ep_gammas**k * ep_rewards[t + k] for k in range(end_idx - t)
+                    )
+                    # Compute TD error
+                    # δ_t = r_t + γ * V(s_{t+1}) - V(s_t)
+                    delta = ep_rewards[t] + ep_gammas * ep_next_values[t] - ep_values[t]
+                    last_advantage = delta + ep_gammas * trace_decay * last_advantage
+                    advantages[start + t, problem_idx] = (
+                        delta + ep_gammas * trace_decay * last_advantage
+                    )
 
-        # Normalize advantages: A_t = (A_t - μ_A) / (σ_A + ε)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-    # Flatten tensors for optimization
+    batches = [torch.randperm(state.size(0), device=device) for _ in range(ppo_epochs)]
     advantages = advantages.view(n_problems * nt, -1)
+    if torch.isnan(advantages).any():
+        print("Warning: NaN detected in advantages")
     rewards_to_go = rewards_to_go.view(n_problems * nt, -1)
-
     # 3. PPO Optimization
-    for _ in range(ppo_epochs):
+    for epoch in range(ppo_epochs):
         actor_opt.zero_grad()
         critic_opt.zero_grad()
 
-        # Shuffle transitions for better training
-        if nt > 1:
-            perm = np.arange(state.shape[0])
-            np.random.shuffle(perm)
-            perm = torch.LongTensor(perm).to(device)
-            state = state[perm, :].clone()
-            action = action[perm, :].clone()
-            rewards_to_go = rewards_to_go[perm, :].clone()
-            advantages = advantages[perm, :].clone()
-            old_log_probs = old_log_probs[perm, :].clone()
-
-        # Mini-batch training
-        for j in range(nt * n_problems, 0, -batch_size):
-            nb = min(j, batch_size)
-            if nb <= 1:  # Skip batches that are too small
+        for batch_idx in torch.split(batches[epoch], batch_size):
+            if len(batch_idx) <= 1:  # Skip batches that are too small
                 continue
 
-            batch_idx = np.arange(j - nb, j)
-            batch_state = state[batch_idx, ...]
-            batch_action = action[batch_idx, ...]
+            # Get batch data using pre-shuffled indices
+            batch_state = state[batch_idx]
+            batch_action = action[batch_idx]
             batch_advantages = advantages[batch_idx, 0]
             batch_rewards_to_go = rewards_to_go[batch_idx, 0]
             batch_old_log_probs = old_log_probs[batch_idx, 0]
@@ -152,19 +163,36 @@ def ppo(
                 continue
 
             # Critic loss: L^VF = 0.5 * (V_θ(s_t) - R_t)^2
-            critic_loss = 0.5 * criterion(
-                batch_state_values.squeeze(), batch_rewards_to_go.detach()
+            old_values = critic(batch_state).detach()
+            v_loss_unclipped = (batch_state_values - batch_rewards_to_go) ** 2
+            v_clipped = old_values + torch.clamp(
+                batch_state_values - old_values, -eps_clip, eps_clip
             )
+            v_loss_clipped = (v_clipped - batch_rewards_to_go) ** 2
+            critic_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+            gp_loss = gradient_penalty(critic, batch_state)
+            critic_loss += gp_lam * gp_loss
 
             # Policy loss: L^CLIP = -E[min(r_t(θ)A_t, clip(r_t(θ), 1-ε, 1+ε)A_t)]
             # where r_t(θ) = π_θ(a_t|s_t) / π_θ_old(a_t|s_t)
             ratios = torch.exp(batch_log_probs - batch_old_log_probs.detach())
+            kl_div = (old_log_probs - batch_log_probs).mean()
+            if kl_div > 2 * target_KL:
+                eps_clip = cfg["EPS_CLIP"] * 1.5
+            elif kl_div < 0.5 * target_KL:
+                eps_clip = cfg["EPS_CLIP"] * 0.5
             surr1 = ratios * batch_advantages.detach()
             surr2 = (
                 torch.clamp(ratios, 1 - eps_clip, 1 + eps_clip)
                 * batch_advantages.detach()
             )
-            actor_loss = -torch.min(surr1, surr2).mean()
+            entropy = -(torch.exp(batch_log_probs) * batch_log_probs).mean()
+
+            if torch.isnan(entropy):
+                print("NaN in entropy calculation - using zero entropy bonus")
+                entropy = torch.zeros_like(entropy)
+
+            actor_loss = -torch.min(surr1, surr2).mean() - ent_coef * entropy
 
             if torch.isnan(actor_loss) or torch.isnan(critic_loss):
                 print("NaN detected in loss calculations. Skipping batch.")

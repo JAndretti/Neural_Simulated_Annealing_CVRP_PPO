@@ -1,22 +1,22 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
-
-
 from typing import Dict
-
 import torch
-
 from model import SAModel
 from problem import Problem
-from replay import Replay
+from replay import ReplayBuffer
 from utils import extend_to
 from scheduler import Scheduler
 
 
 def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
     """
-    Compute acceptance probability, at temperature temp, of a move leading
-    to a change in the energy function of 'gain'.
+    Compute the Metropolis acceptance probability for a proposed move.
+
+    Args:
+        gain: Energy difference (current_cost - proposed_cost)
+        temp: Current temperature
+
+    Returns:
+        Probability to accept the move, following exp(gain/temp) with clipping to [0,1]
     """
     return torch.minimum(torch.exp(gain / temp), torch.ones_like(gain))
 
@@ -24,235 +24,235 @@ def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
 def sa(
     actor: SAModel,
     problem: Problem,
-    init_x: torch.Tensor,
-    cfg: dict,
+    initial_solution: torch.Tensor,
+    config: dict,
     baseline: bool = False,
     random_std: float = 0.2,
     greedy: bool = False,
     record_state: bool = False,
-    replay: Replay = None,
+    replay_buffer: ReplayBuffer = None,
 ) -> Dict[str, torch.Tensor]:
     """
-    Runs Simulated Annealing (SA) optimisation.
+    Perform Simulated Annealing optimization for combinatorial problems.
 
-    Parameters
-    ----------
-    actor: SAModel (nn.Module)
-        The network used to compute the proposal distribution.
-    problem: Problem object (see problem.py)
-        The problem to be optimised.
-    init_x: torch tensor
-        An initial solution to the problem.
-    cfg: dict
-        Dictionary containing SA hyperparameters.
-    baseline: boolean
-        If True, actions are sampled from a uniform proposal distribution.
-        If False, actions are sampled from the proposal distribution defined by 'actor'.
-    random_std: float
-        The standard deviation of the proposal distribution
-        (only used for Rosenbrock's function).
-    greedy: boolean
-        If True, actor will pick the most likely action.
-        If False, actor will sample from the proposal distribution.
-    record_state: boolean
-        If True, save partial results (states, distributions).
-    replay: Replay object
+    Args:
+        actor: Policy network proposing solution modifications
+        problem: Problem definition (e.g., CVRP)
+        initial_solution: Starting solution tensor
+        config: Dictionary containing hyperparameters:
+               - INIT_TEMP: Starting temperature
+               - STOP_TEMP: Final temperature
+               - OUTER_STEPS: Number of temperature steps
+               - INNER_STEPS: Steps per temperature
+               - SCHEDULER: Cooling schedule type
+               - METHOD: Optimization method
+               - REWARD: Reward calculation method
+        baseline: Whether to use random actions instead of actor
+        random_std: Standard deviation for random actions
+        greedy: Whether to use greedy action selection
+        record_state: Whether to track optimization states
+        replay_buffer: Experience replay buffer for RL training
 
-    Returns
-    -------
-    best_x: torch tensor
-        Best solution found during the optimisation.
-    min_cost: torch tensor
-        Minimum solution found during the optimisation.
-    primal: torch tensor
-        The primal loss (sum of minimum costs over the optimisation process).
-    n_acc, n_rej: torch tensor
-        Number of accepted (rejected) moves.
-    distributions: torch tensor
-        The proposal distribution at each point of the optimisation process.
-    states: torch tensor
-        The states observed during the optimisation.
-    acceptance: torch tensor
-        Whether each move is accepted or rejected.
-    costs: torch tensor
-        The costs observed during the optimisation.
+    Returns:
+        Dictionary containing optimization results:
+        - best_x: Best solution found
+        - min_cost: Cost of best solution
+        - primal: Cumulative best costs
+        - ngain: Negative improvement from initial cost
+        - n_acc/n_rej: Count of accepted/rejected moves
+        - distributions: Action probabilities (if recorded)
+        - states: State history (if recorded)
+        - actions: Action history (if recorded)
+        - acceptance: Move acceptance (if recorded)
+        - costs: Cost history (if recorded)
+        - init_cost: Initial solution cost
+        - reward: Computed rewards
+        - temperature: Temperature schedule
     """
-    device = init_x.device
+    device = initial_solution.device
 
-    # Init SA cfg
-    temp = torch.tensor([cfg["INIT_TEMP"]], device=device)
-    next_temp = temp
+    # Initialize temperature parameters
+    current_temp = torch.tensor([config["INIT_TEMP"]], device=device)
+    next_temp = current_temp
+
+    # Set up cooling schedule
     scheduler = Scheduler(
-        cfg["SCHEDULER"],
-        T_max=cfg["INIT_TEMP"],
-        T_min=cfg["STOP_TEMP"],
-        step_max=cfg["OUTER_STEPS"],
+        config["SCHEDULER"],
+        T_max=config["INIT_TEMP"],
+        T_min=config["STOP_TEMP"],
+        step_max=config["OUTER_STEPS"],
     )
 
-    # Init archive
-    best_x = x = init_x
-    min_cost = problem.cost(best_x)
-    init_cost = min_cost.clone()
-    primal = min_cost
-    first_cost = cost = min_cost
-    n_acc, n_rej = 0, 0
-    distributions, states, actions = [], [], []
-    temperature = [temp]
-    acceptance = []
-    costs = [min_cost]
-    reward = None
-    last_step = None
-    end = False
+    # Initialize optimization tracking variables
+    best_solution = current_solution = initial_solution
+    best_cost = problem.cost(best_solution)
+    initial_cost = best_cost.clone()
+    cumulative_cost = best_cost
+    current_cost = best_cost
 
-    # Map initial solution to state
-    state = problem.to_state(
-        x, temp, torch.tensor(1 - (1 / cfg["OUTER_STEPS"]), device=device)
+    # Tracking counters and histories
+    accepted_moves = 0
+    rejected_moves = 0
+    action_distributions = []
+    state_history = []
+    action_history = []
+    temperature = [current_temp]
+    acceptance_history = []
+    cost_history = [current_cost]
+    reward_signal = None
+
+    # Convert initial solution to state representation
+    current_state = problem.to_state(
+        current_solution,
+        current_temp,
+        torch.tensor(1 - (1 / config["OUTER_STEPS"]), device=device),
     ).to(device)
-    next_state = state
 
-    # Loops through the different temperatures in the optimization.
-    for step in range(cfg["OUTER_STEPS"]):
-        # Try a number of actions at each temperature.
-        for j in range(cfg["INNER_STEPS"]):
+    # Main optimization loop over temperature steps
+    for step in range(config["OUTER_STEPS"]):
+        # Inner loop at fixed temperature
+        for inner_step in range(config["INNER_STEPS"]):
             if record_state:
-                states.append(state)
+                state_history.append(current_state)
 
-            # Evaluate the actor and sample an action.
+            # Generate action from policy or baseline
             if baseline:
-                action, old_log_probs = actor.baseline_sample(
-                    state, random_std=random_std, problem=problem
+                action, action_log_prob = actor.baseline_sample(
+                    current_state, random_std=random_std, problem=problem
                 )
             else:
-                action, old_log_probs, mask = actor.sample(
-                    state, greedy=greedy, problem=problem
+                action, action_log_prob, validity_mask = actor.sample(
+                    current_state, greedy=greedy, problem=problem
                 )
+            if config["HEURISTIC"] == "mix":
+                heuristic_action = sum(action[:, 2])
+                ratio = heuristic_action / len(action[:, 2])
+
+            # Record action information if needed
             if record_state:
-                logits = actor.get_logits(state, action, problem=problem)
-                distributions.append(logits)
-                actions.append(action)
+                action_distributions.append(
+                    actor.get_logits(current_state, action, problem=problem)
+                )
+                action_history.append(action)
 
-            # Compute proposal
-            x, *_ = problem.from_state(state)
-            proposal = problem.update(x, action)
+            # Generate proposed solution
+            solution_components, *_ = problem.from_state(current_state)
+            proposed_solution = problem.update(solution_components, action)
+            proposed_cost = problem.cost(proposed_solution)
 
-            # Compute gain
-            proposal_cost = problem.cost(proposal)
-            gain = cost - proposal_cost
+            # Calculate improvement
+            cost_improvement = current_cost - proposed_cost
 
-            # Accept--reject step
-            p_acceptance = p_accept(gain, temp)
-            u = torch.rand(p_acceptance.shape, device=device)
-            accept = 1 * (u < p_acceptance)
-            realized_gain = gain * accept
+            # Metropolis acceptance criterion
+            acceptance_prob = p_accept(cost_improvement, current_temp)
+            random_sample = torch.rand(acceptance_prob.shape, device=device)
+            is_accepted = (random_sample < acceptance_prob).long()
+            actual_improvement = cost_improvement * is_accepted
 
-            # Records
-            n_acc += accept
-            n_rej += 1 - accept
+            # Update counters
+            accepted_moves += is_accepted
+            rejected_moves += 1 - is_accepted
+
             if record_state:
-                acceptance.append(accept)
+                acceptance_history.append(is_accepted)
 
-            # Update state and cost
-            cost = accept * proposal_cost + (1 - accept) * cost
-            accept = extend_to(accept, x)
-            next_x = (accept * proposal + (1 - accept) * x).long()
+            # Update current solution
+            current_cost = (
+                is_accepted * proposed_cost + (1 - is_accepted) * current_cost
+            )
+            is_accepted_expanded = extend_to(is_accepted, solution_components)
+            current_solution = (
+                is_accepted_expanded * proposed_solution
+                + (1 - is_accepted_expanded) * solution_components
+            ).long()
 
-            # Update archive
+            # Update best solution tracking
             if record_state:
-                costs.append(cost)
-            new_best = 1 * (cost < min_cost)
-            new_best = extend_to(new_best, x)
-            best_x = new_best * x + (1 - new_best) * best_x
-            min_cost = torch.minimum(cost, min_cost)
-            primal = primal + min_cost
+                cost_history.append(current_cost)
 
-            # Cool down if we completed the inner steps
-            if j == cfg["INNER_STEPS"] - 1:
-                if last_step is not None:
-                    step -= last_step
+            is_improvement = (current_cost < best_cost).long()
+            is_improvement_expanded = extend_to(is_improvement, solution_components)
+            best_solution = (
+                is_improvement_expanded * current_solution
+                + (1 - is_improvement_expanded) * best_solution
+            )
+            best_cost = torch.minimum(current_cost, best_cost)
+            cumulative_cost += best_cost
 
+            # Temperature update at end of inner steps
+            if inner_step == config["INNER_STEPS"] - 1:
                 next_temp = scheduler.step(step).to(device)
 
+                # Adaptive cooling schedule adjustment
                 if (
-                    max(10, cfg["OUTER_STEPS"] * 0.1) == cfg["OUTER_STEPS"] - step + 1
-                    and not end
+                    max(10, config["OUTER_STEPS"] * 0.1)
+                    == config["OUTER_STEPS"] - step + 1
                 ):
                     scheduler = Scheduler(
                         "lam",
-                        T_max=1,
+                        T_max=1.0,
                         T_min=0.01,
-                        step_max=cfg["OUTER_STEPS"] - step + 1,
+                        step_max=config["OUTER_STEPS"] - step + 1,
                     )
-                    last_step = step
-                    end = True
                     next_temp = torch.tensor([1], device=device)
                 temperature.append(next_temp)
 
-            else:
-                next_temp = temp
-            # Compute next state
+            # Prepare next state
             next_state = problem.to_state(
-                next_x,
+                current_solution,
                 next_temp,
-                torch.tensor(1 - (step / cfg["OUTER_STEPS"])).to(device),
+                torch.tensor(1 - (step / config["OUTER_STEPS"])).to(device),
             ).to(device)
 
-            # Compute reward (only relevant when training with PPO)
-            if cfg["METHOD"] == "ppo":
-                if cfg["REWARD"] == "immediate":
-                    # Rewards are given by the immediate change in the energy function
-                    reward = realized_gain.unsqueeze(1)
-                elif cfg["REWARD"] == "min_cost":
-                    # Rewards are given by the minimum cost found
-                    reward = -min_cost.view(-1, 1)
-                elif cfg["REWARD"] == "primal":
-                    # Rewards are given by the sum of minimum costs over
-                    # the optimisation process
-                    reward = -primal.view(-1, 1)
-                else:
-                    raise NotImplementedError
+            # Reward calculation for reinforcement learning
+            if config["METHOD"] == "ppo":
+                if config["REWARD"] == "immediate":
+                    reward_signal = actual_improvement.unsqueeze(1)
+                elif config["REWARD"] == "min_cost":
+                    reward_signal = -best_cost.view(-1, 1)
+                elif config["REWARD"] == "primal":
+                    reward_signal = -cumulative_cost.view(-1, 1)
 
-            # if step == cfg["OUTER_STEPS"] - 1:
-            #     tmp = init_cost - min_cost
-            #     reward += tmp
-
-            if replay is not None:
-                replay.push(
-                    state,
+            # Store experience in replay buffer
+            if replay_buffer is not None:
+                replay_buffer.push(
+                    current_state,
                     action,
                     next_state,
-                    reward,
-                    old_log_probs,
-                    mask,
-                    cfg["GAMMA"],
+                    reward_signal,
+                    action_log_prob,
+                    validity_mask,
+                    config["GAMMA"],
                 )
 
-        # Reset state and temperature
-        state = next_state.clone()
-        temp = next_temp
+        # Update state and temperature for next iteration
+        current_state = next_state.clone()
+        current_temp = next_temp
 
-    # Negative gain
-    ngain = -(first_cost - cost)
+    # Finalize results
+    negative_improvement = -(initial_cost - current_cost)
 
-    # If a Replay object is given, we update the last transition with gamma=0
-    # (final state).
-    if replay is not None:
-        if len(replay) > 0:
-            last_transition = replay.pop()
-            replay.push(*(list(last_transition[:-1]) + [0.0]))
+    # Handle final transition in replay buffer
+    if replay_buffer is not None and len(replay_buffer) > 0:
+        final_transition = replay_buffer.pop()
+        replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
 
-    return {
-        "best_x": best_x,
-        "min_cost": min_cost,
-        "primal": primal,
-        "ngain": ngain,
-        "n_acc": n_acc.float(),
-        "n_rej": n_rej.float(),
-        "distributions": distributions,
-        "states": states,
-        "actions": actions,
-        "acceptance": acceptance,
-        "costs": costs,
-        "init_cost": init_cost,
-        "reward": reward,
+    dict = {
+        "best_x": best_solution,
+        "min_cost": best_cost,
+        "primal": cumulative_cost,
+        "ngain": negative_improvement,
+        "n_acc": accepted_moves.float(),
+        "n_rej": rejected_moves.float(),
+        "distributions": action_distributions,
+        "states": state_history,
+        "actions": action_history,
+        "acceptance": acceptance_history,
+        "costs": cost_history,
+        "init_cost": initial_cost,
+        "reward": reward_signal,
         "temperature": temperature,
     }
+    if config["HEURISTIC"] == "mix":
+        dict["ratio"] = ratio
+    return dict

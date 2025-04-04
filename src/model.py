@@ -36,6 +36,236 @@ class SAModel(nn.Module):
                 m.bias.data.fill_(0.01)
 
 
+class CVRPActorPairs(SAModel):
+    """Actor network for CVRP that selects pairs of nodes to swap."""
+
+    def __init__(
+        self,
+        embed_dim: int = 32,
+        c: int = 22,
+        device: str = "cpu",
+        mixed_heuristic: bool = False,
+    ) -> None:
+        super().__init__(device)
+        self.mixed_heuristic = mixed_heuristic
+
+        self.input_dim = c + 2 if mixed_heuristic else c
+
+        self.net = nn.Sequential(
+            nn.Linear(self.input_dim, embed_dim, bias=True, device=device),
+            nn.ReLU(),
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
+            nn.ReLU(),
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
+            nn.ReLU(),
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, 1, bias=False, device=device),
+        )
+
+        self.apply(self.init_weights)
+
+    def forward(self, state):
+        """Forward pass computing logits for node pairs."""
+        pair_logits = self.net(state)
+        return pair_logits
+
+    @staticmethod
+    def init_weights(m: nn.Module) -> None:
+        """Initialize weights using Kaiming uniform initialization."""
+        if isinstance(m, nn.Linear):
+            nn.init.kaiming_uniform_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    def sample_from_logits(
+        self, logits: torch.Tensor, greedy: bool = False, one_hot: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample actions from logits using either greedy or multinomial sampling."""
+        probs = torch.softmax(logits, dim=-1)
+
+        if greedy:
+            smpl = torch.argmax(probs, -1, keepdim=False)
+        else:
+            smpl = torch.multinomial(probs, 1, generator=self.generator)[..., 0]
+
+        taken_probs = probs.gather(1, smpl.view(-1, 1))
+
+        if one_hot:
+            smpl = F.one_hot(smpl, num_classes=logits.shape[-1])[..., None]
+
+        return smpl, torch.log(taken_probs)
+
+    def get_logits(
+        self, state: torch.Tensor, action: torch.Tensor, **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute logits and log probabilities for given state and action."""
+        pair_features, idx1, idx2, mask, heuristic_indices = (
+            self._prepare_features_and_pairs(state)
+        )
+
+        # Forward pass
+        outputs = self.forward(pair_features)
+        logits = outputs[..., 0]
+        probs = torch.softmax(logits, dim=-1)
+        log_probs = torch.log(probs)
+        all_action = (
+            (
+                torch.cat(
+                    [
+                        idx1.unsqueeze(-1),
+                        idx2.unsqueeze(-1),
+                        heuristic_indices.unsqueeze(-1),
+                    ],
+                    dim=-1,
+                )
+                if heuristic_indices is not None
+                else torch.cat([idx1.unsqueeze(-1), idx2.unsqueeze(-1)], dim=-1)
+            ),
+        )
+
+        return log_probs[..., 0], all_action
+
+    def baseline_sample(
+        self, state: torch.Tensor, **kwargs
+    ) -> Tuple[torch.Tensor, None]:
+        """Generate baseline sample using uniform probabilities."""
+        n_problems, problem_dim, dim = state.shape
+        state = state[:, :, :-2]  # Remove temperature and time
+
+        x, _, *_ = torch.split(state, [1, 2] + [1] * (dim - 5), dim=-1)
+        mask = x.squeeze(-1) != 0
+        x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
+
+        idx1, idx2 = torch.triu_indices(x.shape[1], x.shape[1], offset=1)
+        logits = torch.ones(n_problems, idx1.shape[0]).to(self.device)
+        c, _ = self.sample_from_logits(logits, one_hot=False)
+
+        if self.mixed_heuristic:
+            pair_idx = c // 2
+            heuristic_idx = c % 2
+            action = torch.stack(
+                [idx1[pair_idx], idx2[pair_idx], heuristic_idx], dim=-1
+            )
+        else:
+            action = torch.stack([idx1[c], idx2[c]], dim=-1)
+
+        return action, None
+
+    def sample(
+        self, state: torch.Tensor, greedy: bool = False, **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample an action pair from the current state."""
+        pair_features, idx1, idx2, mask, heuristic_indices = (
+            self._prepare_features_and_pairs(state)
+        )
+
+        # Forward pass
+        outputs = self.forward(pair_features)
+
+        logits = outputs[..., 0]
+        c, log_probs = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
+
+        if self.mixed_heuristic:
+            pair_idx = c // 2
+            heuristic_idx = c % 2
+            action = torch.stack(
+                [idx1[pair_idx], idx2[pair_idx], heuristic_idx], dim=-1
+            )
+        else:
+            action = torch.stack([idx1[c], idx2[c]], dim=-1)
+
+        total_log_probs = log_probs
+
+        return action, total_log_probs[..., 0], mask
+
+    def evaluate(
+        self, state: torch.Tensor, action: torch.Tensor, **kwargs
+    ) -> torch.Tensor:
+        """Evaluate log probabilities of given actions."""
+        pair_features, idx1, idx2, mask, heuristic_indices = (
+            self._prepare_features_and_pairs(state)
+        )
+        if self.mixed_heuristic:
+            # Find the pair index
+            pair_mask = (idx1 == action[:, 0].unsqueeze(1)) & (
+                idx2 == action[:, 1].unsqueeze(1)
+            )
+            pair_idx = pair_mask.nonzero(as_tuple=True)[1]
+            # Calculate the full action index (pair_idx * 2 + heuristic_idx)
+            action_idx = pair_idx * 2 + action[:, 2]
+        else:
+            action_idx = (idx1 == action[:, 0].unsqueeze(1)) & (
+                idx2 == action[:, 1].unsqueeze(1)
+            )
+            action_idx = action_idx.nonzero(as_tuple=True)[1]
+
+        # Forward pass
+        outputs = self.forward(pair_features)
+
+        logits = outputs[..., 0]
+
+        # Compute action probabilities
+        probs = torch.softmax(logits, dim=-1)
+        log_probs = torch.log(probs.gather(1, action_idx.view(-1, 1)))
+        return log_probs[..., 0]
+
+    def _prepare_features_and_pairs(
+        self, state: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Helper method to prepare features and pairs from state."""
+        n_problems, problem_dim, dim = state.shape
+        temp, time = state[:, :, -2], state[:, :, -1]
+        state = state[:, :, :-2]  # Remove temperature and time
+
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * (dim - 5), dim=-1
+        )
+
+        # Gather coordinate information
+        coords = coords.gather(1, x.long().expand_as(coords))
+        coords_prev = torch.roll(coords, 1, 1)
+        coords_next = torch.roll(coords, -1, 1)
+
+        c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
+        mask = x.squeeze(-1) != 0
+        c_state = torch.stack([c[m] for c, m in zip(c_state, mask)], dim=0)
+
+        # Get all possible pairs
+        idx1, idx2 = torch.triu_indices(c_state.shape[1], c_state.shape[1], offset=1)
+        x_pairs_1 = c_state[:, idx1, :]
+        x_pairs_2 = c_state[:, idx2, :]
+
+        # Combine pair features with temperature and time
+        pair_features = torch.cat(
+            [
+                x_pairs_1,
+                x_pairs_2,
+                temp[:, idx1].unsqueeze(-1),
+                time[:, idx1].unsqueeze(-1),
+            ],
+            dim=-1,
+        )
+        if self.mixed_heuristic:
+            # Duplicate each pair for both heuristic options
+            n_pairs = pair_features.shape[1]
+            pair_features = pair_features.repeat_interleave(2, dim=1)
+
+            # Add one-hot encoding for heuristic selection
+            heuristic_indices = torch.arange(2, device=self.device).repeat(n_pairs)
+            heuristic_one_hot = F.one_hot(heuristic_indices, num_classes=2).repeat(
+                n_problems, 1, 1
+            )
+
+            # Concatenate the one-hot encoding to the features
+            pair_features = torch.cat([pair_features, heuristic_one_hot], dim=-1)
+        else:
+            heuristic_indices = None
+
+        return pair_features, idx1, idx2, mask, heuristic_indices
+
+
 class CVRPActor(SAModel):
     def __init__(
         self, embed_dim: int, c1: int = 7, c2: int = 13, device: str = "cpu"
@@ -268,33 +498,38 @@ class CVRPActor(SAModel):
 
 
 class CVRPCritic(nn.Module):
+    """Critic network for CVRP that estimates state values."""
+
     def __init__(self, embed_dim: int, c: int = 7, device: str = "cpu") -> None:
         super().__init__()
         self.q_func = nn.Sequential(
             nn.Linear(c, embed_dim, device=device),
+            nn.LayerNorm(embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, device=device),
+            nn.LayerNorm(embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, 1, device=device),
         )
-
         self.q_func.apply(self.init_weights)
 
     @staticmethod
     def init_weights(m: nn.Module) -> None:
-        if type(m) is nn.Linear:
+        """Initialize weights using Kaiming uniform initialization."""
+        if isinstance(m, nn.Linear):
             nn.init.kaiming_uniform_(m.weight)
             if m.bias is not None:
                 m.bias.data.fill_(0.01)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Forward pass computing state values."""
         n_problems, problem_dim, dim = state.shape
-
         num_extra_features = dim - 3
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * num_extra_features, dim=-1
         )
 
+        # Gather current, previous and next coordinates
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.roll(coords, 1, 1)
         coords_next = torch.roll(coords, -1, 1)
@@ -302,274 +537,3 @@ class CVRPCritic(nn.Module):
         state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
         q_values = self.q_func(state).view(n_problems, problem_dim)
         return q_values.mean(dim=-1)
-
-
-class CVRPActorPairs(SAModel):
-    def __init__(self, embed_dim: int = 32, c: int = 22, device: str = "cpu") -> None:
-        super().__init__(device)
-        self.net = nn.Sequential(
-            nn.Linear(c, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, 1, bias=False, device=device),
-        )
-
-        self.net.apply(self.init_weights)
-
-    def sample_from_logits(
-        self, logits: torch.Tensor, greedy: bool = False, one_hot: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        n_problems, problem_dim = logits.shape
-        probs = torch.softmax(logits, dim=-1)
-
-        if greedy:
-            smpl = torch.argmax(probs, -1, keepdim=False)
-        else:
-            smpl = torch.multinomial(probs, 1, generator=self.generator)[..., 0]
-
-        taken_probs = probs.gather(1, smpl.view(-1, 1))
-
-        if one_hot:
-            smpl = F.one_hot(smpl, num_classes=problem_dim)[..., None]
-
-        return smpl, torch.log(taken_probs)
-
-    def get_logits(
-        self, state: torch.Tensor, action: torch.Tensor, **kwargs
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the logits and log probabilities for the given state and action.
-        Args:
-            state (torch.Tensor): The current state tensor with shape
-            (n_problems, problem_dim, dim).
-            action (torch.Tensor): The action tensor.
-            **kwargs: Additional keyword arguments, including:
-                - problem: An instance of the problem class providing the
-                get_permutable_pairs method.
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-                - logits (torch.Tensor): The computed logits tensor.
-                - log_probs (torch.Tensor): The log probabilities tensor.
-        """
-
-        pb = kwargs["problem"]
-        n_problems, problem_dim, dim = state.shape
-        num_extra_features = dim - 3 - 2  # Number of extra features excluding
-        # temperature and time
-        temp, time = state[:, :, -2], state[:, :, -1]
-        # Extract temperature and time features
-        state = state[:, :, :-2]  # Remove temperature and time from state
-
-        # Split state into different components
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        # Gather coordinates based on the current position
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)  # Previous coordinates
-        coords_next = torch.roll(coords, -1, 1)  # Next coordinates
-
-        # Concatenate coordinates and extra features to form the state
-        c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
-
-        # Get upper triangular indices for pair combinations
-        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1)
-
-        # Extract pairs of features
-        x_pairs_1 = c_state[:, idx1, :]
-        x_pairs_2 = c_state[:, idx2, :]
-        pair_features = torch.cat([x_pairs_1, x_pairs_2], dim=-1)
-
-        # Add temperature and time features to the pairs
-        temp = temp[:, idx1].unsqueeze(-1)
-        time = time[:, idx1].unsqueeze(-1)
-        pair_features = torch.cat(
-            [pair_features, temp, time],
-            dim=-1,
-        )
-
-        # Get mask for valid permutations
-        mask = ~(pb.get_permutable_pairs(x.long(), (idx1, idx2)))
-
-        # Compute logits and apply mask
-        logits = self.net(pair_features)[..., 0]
-        logits[mask] = -float("inf")
-        probs = torch.softmax(logits, dim=-1)
-        return torch.log(probs)
-
-    def baseline_sample(
-        self, state: torch.Tensor, **kwargs
-    ) -> Tuple[torch.Tensor, None]:
-        """
-        Generates a baseline sample action based on the given state and problem.
-
-        Args:
-            state (torch.Tensor): The input state tensor with shape
-            (n_problems, problem_dim, dim).
-            **kwargs: Additional keyword arguments, including:
-                - problem: The problem instance providing the method
-                `get_permutable_pairs`.
-
-        Returns:
-            Tuple[torch.Tensor, None]: A tuple containing the action tensor and None.
-                The action tensor has shape (n_problems, 2) representing
-                the selected pair of indices.
-        """
-
-        pb = kwargs["problem"]
-        n_problems, problem_dim, dim = state.shape
-        num_extra_features = dim - 3 - 2  # Number of extra features excluding
-
-        # Extract temperature and time features
-        state = state[:, :, :-2]  # Remove temperature and time from state
-
-        # Split state into different components
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-        # Get upper triangular indices for pair combinations
-        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1)
-        # Get mask for valid permutations
-        mask = pb.get_permutable_pairs(x.long(), (idx1, idx2))
-        logits = torch.ones(mask.shape[0], mask.shape[1]).to(self.generator.device)
-        logits[~mask] = -float("inf")
-        c, _ = self.sample_from_logits(logits, one_hot=False)
-        action = torch.stack([idx1[c], idx2[c]], dim=-1)
-        return action, None
-
-    def sample(
-        self, state: torch.Tensor, greedy: bool = False, **kwargs
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Generates a sample action based on the given state and problem.
-
-        Args:
-            state (torch.Tensor): The input state tensor with shape
-            (n_problems, problem_dim, dim).
-            greedy (bool): A boolean flag indicating whether to use greedy sampling.
-            **kwargs: Additional keyword arguments, including:
-                - problem: The problem instance providing the method
-                `get_permutable_pairs`.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing the action tensor
-            and the log probabilities tensor. The action tensor has shape
-            (n_problems, 2) representing the selected pair of indices.
-        """
-        pb = kwargs["problem"]
-        n_problems, problem_dim, dim = state.shape
-        num_extra_features = dim - 3 - 2
-        # temperature and time
-        temp, time = state[:, :, -2], state[:, :, -1]
-        # Extract temperature and time features
-        state = state[:, :, :-2]  # Remove temperature and time from state
-
-        # Split state into different components
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        # Gather coordinates based on the current position
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)  # Previous coordinates
-        coords_next = torch.roll(coords, -1, 1)  # Next coordinates
-
-        # Concatenate coordinates and extra features to form the state
-        c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
-
-        # Get upper triangular indices for pair combinations
-        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1).to(
-            self.device
-        )
-
-        # Extract pairs of features
-        x_pairs_1 = c_state[:, idx1, :]
-        x_pairs_2 = c_state[:, idx2, :]
-        pair_features = torch.cat([x_pairs_1, x_pairs_2], dim=-1)
-
-        # Add temperature and time features to the pairs
-        temp = temp[:, idx1].unsqueeze(-1)
-        time = time[:, idx1].unsqueeze(-1)
-        pair_features = torch.cat(
-            [pair_features, temp, time],
-            dim=-1,
-        )
-
-        # Get mask for valid permutations
-        mask = ~(pb.get_permutable_pairs(x.long(), (idx1, idx2)))
-
-        # Compute logits and apply mask
-        logits = self.net(pair_features)[..., 0]
-        logits[mask] = -float("inf")
-        c, log_probs = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
-        action = torch.stack([idx1[c], idx2[c]], dim=-1)
-        return action, log_probs[..., 0], mask
-
-    def evaluate(
-        self, state: torch.Tensor, action: torch.Tensor, mask: torch.Tensor, **kwargs
-    ) -> torch.Tensor:
-        """
-        Evaluates the log probabilities of the given action based on the input state.
-
-        Args:
-            state (torch.Tensor): The input state tensor with shape
-            (n_problems, problem_dim, dim).
-            action (torch.Tensor): The action tensor with shape (n_problems, 2).
-            mask2 (torch.Tensor): The mask tensor for the second city.
-
-        Returns:
-            torch.Tensor: The log probabilities tensor.
-        """
-        n_problems, problem_dim, dim = state.shape
-        num_extra_features = dim - 3 - 2  # Number of extra features excluding
-        # temperature and time
-        temp, time = state[:, :, -2], state[:, :, -1]
-        # Extract temperature and time features
-        state = state[:, :, :-2]
-
-        # Split state into different components
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        # Gather coordinates based on the current position
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)  # Previous coordinates
-        coords_next = torch.roll(coords, -1, 1)  # Next coordinates
-
-        # Concatenate coordinates and extra features to form the state
-        c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
-
-        # Get upper triangular indices for pair combinations
-        idx1, idx2 = torch.triu_indices(problem_dim, problem_dim, offset=1).to(
-            self.device
-        )
-
-        # Find the indices where idx1 equals action[:, 0] and idx2 equals action[:, 1]
-        action_idx = (idx1 == action[:, 0].unsqueeze(1)) & (
-            idx2 == action[:, 1].unsqueeze(1)
-        )
-        action_idx = action_idx.nonzero(as_tuple=True)[1]
-        # Extract pairs of features
-        x_pairs_1 = c_state[:, idx1, :]
-        x_pairs_2 = c_state[:, idx2, :]
-        pair_features = torch.cat([x_pairs_1, x_pairs_2], dim=-1)
-
-        # Add temperature and time features to the pairs
-        temp = temp[:, idx1].unsqueeze(-1)
-        time = time[:, idx1].unsqueeze(-1)
-        pair_features = torch.cat(
-            [pair_features, temp, time],
-            dim=-1,
-        )
-
-        # Compute logits and apply mask
-        logits = self.net(pair_features)[..., 0]
-        logits[mask] = -float("inf")
-        probs = torch.softmax(logits, dim=-1)
-        log_probs = torch.log(probs.gather(1, action_idx.view(-1, 1)))
-        return log_probs[..., 0]
