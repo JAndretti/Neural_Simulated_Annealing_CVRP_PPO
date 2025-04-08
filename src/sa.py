@@ -100,6 +100,7 @@ def sa(
     acceptance_history = []
     cost_history = [current_cost]
     reward_signal = None
+    ratio = 0.0
 
     # Convert initial solution to state representation
     current_state = problem.to_state(
@@ -126,7 +127,7 @@ def sa(
                 )
             if config["HEURISTIC"] == "mix":
                 heuristic_action = sum(action[:, 2])
-                ratio = heuristic_action / len(action[:, 2])
+                ratio += heuristic_action / len(action[:, 2])
 
             # Record action information if needed
             if record_state:
@@ -254,5 +255,5 @@ def sa(
         "temperature": temperature,
     }
     if config["HEURISTIC"] == "mix":
-        dict["ratio"] = ratio
+        dict["ratio"] = ratio / config["OUTER_STEPS"]
     return dict

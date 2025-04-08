@@ -62,9 +62,9 @@ class CVRPActorPairs(SAModel):
             nn.ReLU(),
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, 1, bias=False, device=device),
-        )
+        ).to(device)
 
-        self.apply(self.init_weights)
+        self.net.apply(self.init_weights)
 
     def forward(self, state):
         """Forward pass computing logits for node pairs."""
@@ -233,7 +233,9 @@ class CVRPActorPairs(SAModel):
         c_state = torch.stack([c[m] for c, m in zip(c_state, mask)], dim=0)
 
         # Get all possible pairs
-        idx1, idx2 = torch.triu_indices(c_state.shape[1], c_state.shape[1], offset=1)
+        idx1, idx2 = torch.triu_indices(
+            c_state.shape[1], c_state.shape[1], offset=1, device=self.device
+        )
         x_pairs_1 = c_state[:, idx1, :]
         x_pairs_2 = c_state[:, idx2, :]
 
@@ -510,7 +512,7 @@ class CVRPCritic(nn.Module):
             nn.LayerNorm(embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, 1, device=device),
-        )
+        ).to(device)
         self.q_func.apply(self.init_weights)
 
     @staticmethod

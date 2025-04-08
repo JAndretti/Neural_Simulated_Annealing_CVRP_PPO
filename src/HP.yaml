@@ -1,10 +1,10 @@
 # =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"
 GROUP: "CVRP 2opt_swap_mix"
-LOG: True                  # Enable WandB logging
+LOG: False                  # Enable WandB logging
 
 # =============== Hardware & Setup ===============
-DEVICE: "cpu"              # cpu/cuda/mps
+DEVICE: "mps"              # cpu/cuda/mps
 SEED: 42                   # Random seed
 
 # =============== CVRP Problem ===============

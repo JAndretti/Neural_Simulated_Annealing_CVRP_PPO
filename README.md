@@ -40,8 +40,8 @@ NSA_CVRP_PPO/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/JAndretti/NSA_CVRP_PPO.git
-cd NSA_CVRP_PPO
+git clone https://github.com/JAndretti/Neural_Simulated_Annealing_CVRP_PPO.git
+cd Neural_Simulated_Annealing_CVRP_PPO
 ```
 2. Install dependencies:
 ```bash
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 ```
 3. Set up Weights & Biases:
 - Create an accout (free if you use academic email for personnal research)
-- Create a file src/key.txt and write yout personnal key access from wandb
+- Create a file src/key.txt and write your personnal key access from wandb
 
 ## 🚀 Usage
 

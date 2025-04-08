@@ -268,6 +268,17 @@ class CVRP(Problem):
         else:
             raise ValueError(f"Unsupported heuristic: {heuristic}")
 
+    def set_heuristic(self, heuristic: str) -> None:
+        """Set the heuristic for modifying solutions."""
+        if heuristic == "swap":
+            self.heuristic = self.swap
+        elif heuristic == "two_opt":
+            self.heuristic = self.two_opt
+        elif heuristic == "mix":
+            self.heuristic = self.mixed_heuristic
+        else:
+            raise ValueError(f"Unsupported heuristic: {heuristic}")
+
     def _init_problem_parameters(self, dim, n_problems, capacity):
         """Initialize problem size and constraints."""
         if self.params["name"] is not None:

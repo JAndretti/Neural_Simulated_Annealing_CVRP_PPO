@@ -73,16 +73,21 @@ def ppo(
         batch = Transition(*zip(*transitions))  # Convert to structured batch
 
         # Stack and reshape tensors
-        state = torch.stack(batch.state).view(nt * n_problems, problem_dim, -1)
-        action = torch.stack(batch.action).detach().view(nt * n_problems, -1)
+        state = (
+            torch.stack(batch.state).view(nt * n_problems, problem_dim, -1).to(device)
+        )
+        action = torch.stack(batch.action).detach().view(nt * n_problems, -1).to(device)
         batch_gamma = [torch.tensor(g) for g in batch.gamma]
-        gamma = torch.stack(batch_gamma).unsqueeze(-1).repeat(1, n_problems)
+        gamma = torch.stack(batch_gamma).unsqueeze(-1).repeat(1, n_problems).to(device)
         next_state = (
             torch.stack(batch.next_state)
             .detach()
             .view(nt * n_problems, problem_dim, -1)
+            .to(device)
         )
-        old_log_probs = torch.stack(batch.old_log_probs).view(nt * n_problems, -1)
+        old_log_probs = (
+            torch.stack(batch.old_log_probs).view(nt * n_problems, -1).to(device)
+        )
 
         # Compute state values V(s) and V(s')
         state_values = critic(state).view(nt, n_problems, 1)
@@ -95,7 +100,9 @@ def ppo(
         # Process each problem instance separately
         for problem_idx in range(n_problems):
             # Get the sequence for this problem
-            problem_rewards = torch.stack([t.reward[problem_idx] for t in transitions])
+            problem_rewards = torch.stack(
+                [t.reward[problem_idx] for t in transitions]
+            ).to(device)
             problem_values = state_values[:, problem_idx]
             problem_next_values = next_state_values[:, problem_idx]
             problem_gammas = gamma[:, problem_idx]
