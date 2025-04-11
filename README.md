@@ -204,7 +204,6 @@ loss = -min(ratio * A, clip(ratio,1-ε,1+ε)*A)
 value_loss = 0.5 * (V(s) - R)^2 + gradient_penalty
 ```
 ### Testing
-### Scripts Directory
 
 The `Scripts/` folder contains utility scripts for evaluation and visualization:
 
