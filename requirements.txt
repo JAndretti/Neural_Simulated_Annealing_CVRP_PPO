@@ -12,3 +12,4 @@ vrplib
 pandas
 seaborn
 scipy
+snakeviz

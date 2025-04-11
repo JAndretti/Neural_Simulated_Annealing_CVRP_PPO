@@ -10,6 +10,11 @@ from replay import ReplayBuffer
 from Logger import WandbLogger
 from HP import _HP, get_script_arguments
 
+# import cProfile
+# import io
+# import pstats
+
+
 # Load configuration from YAML and command line arguments
 cfg = _HP("src/HP.yaml")
 cfg.update(get_script_arguments(cfg.keys()))
@@ -81,6 +86,27 @@ def train_ppo(
     return (train_in, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad)
 
 
+def test_model(
+    actor: torch.nn.Module,
+    problem: CVRP,
+    init_x: torch.Tensor,
+    cfg: dict,
+):
+    """Tests the trained model using Simulated Annealing."""
+
+    # Perform Simulated Annealing
+    test = sa(
+        actor,
+        problem,
+        init_x,
+        cfg,
+        replay_buffer=None,
+        baseline=False,
+        greedy=False,
+    )
+    return test
+
+
 def main(cfg: dict) -> None:
     """Main training loop for CVRP optimization."""
 
@@ -111,6 +137,21 @@ def main(cfg: dict) -> None:
     )
     problem.manual_seed(cfg["SEED"])
 
+    problem_test = CVRP(
+        cfg["PROBLEM_DIM"],
+        cfg["N_PROBLEMS"],
+        cfg["MAX_LOAD"],
+        device=cfg["DEVICE"],
+        params=cfg,
+    )
+    problem_test.manual_seed(0)
+    # Generate new problem instances
+    params = problem_test.generate_params(mode="test")
+    params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
+    problem_test.set_params(params)
+    # Get initial solutions
+    init_x_test = problem_test.generate_init_x()
+
     # Initialize models
     if cfg["PAIRS"]:
         actor = CVRPActorPairs(
@@ -119,11 +160,10 @@ def main(cfg: dict) -> None:
         )
     else:
         actor = CVRPActor(
-            cfg["EMBEDDING_DIM"],
-            cfg["C1"],
-            cfg["C2"],
             device=cfg["DEVICE"],
+            mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
         )
+    actor.manual_seed(cfg["SEED"])
     critic = CVRPCritic(cfg["EMBEDDING_DIM"], cfg["C"], device=cfg["DEVICE"])
 
     # Initialize optimizers
@@ -144,7 +184,6 @@ def main(cfg: dict) -> None:
 
             # Get initial solutions
             init_x = problem.generate_init_x()
-            actor.manual_seed(cfg["SEED"])
 
             # Training phase
             train_results = train_ppo(
@@ -154,15 +193,12 @@ def main(cfg: dict) -> None:
                 train_results
             )
 
-            # Greedy evaluation
-            greedy_results = sa(
+            # Test phase
+            test = test_model(
                 actor,
-                problem,
-                init_x,
+                problem_test,
+                init_x_test,
                 cfg,
-                replay_buffer=None,
-                baseline=False,
-                greedy=True,
             )
 
             # Logging
@@ -173,32 +209,23 @@ def main(cfg: dict) -> None:
                     "Critic_loss": critic_loss,
                     "Train_loss": actor_loss + 0.5 * critic_loss,
                     # Cost metrics
-                    "Min_cost_before_train": torch.mean(train_in["min_cost"]),
-                    "Min_cost_greedy": torch.mean(greedy_results["min_cost"]),
+                    "Min_cost": torch.mean(test["min_cost"]),
                     # Improvement metrics
-                    "N_gain_before_train": torch.mean(train_in["ngain"]),
-                    "N_gain_greedy": torch.mean(greedy_results["ngain"]),
-                    "Gain_before_train": torch.mean(
-                        train_in["init_cost"] - train_in["min_cost"]
-                    ),
-                    "Gain_greedy": torch.mean(
-                        greedy_results["init_cost"] - greedy_results["min_cost"]
-                    ),
+                    "N_gain": torch.mean(test["ngain"]),
+                    "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
                     # Search statistics
-                    "Acceptance_rate_before_train": torch.mean(train_in["n_acc"]),
-                    "Acceptance_rate_greedy": torch.mean(greedy_results["n_acc"]),
-                    "Rejection_rate_before_train": torch.mean(train_in["n_rej"]),
-                    "Rejection_rate_greedy": torch.mean(greedy_results["n_rej"]),
+                    "Acceptance_rate": torch.mean(test["n_acc"]),
+                    "Rejection_rate": torch.mean(test["n_rej"]),
                     # Gradient monitoring
                     "Avg_actor_grad": avg_actor_grad,
                     "Avg_critic_grad": avg_critic_grad,
                 }
                 if cfg["HEURISTIC"] == "mix":
-                    logs["ratio_heuristic"] = train_in["ratio"]
+                    logs["ratio_heuristic"] = test["ratio"]
                 WandbLogger.log(logs)
 
             # Update progress bar
-            train_loss = torch.mean(train_in["min_cost"])
+            train_loss = torch.mean(test["min_cost"])
             progress_bar.set_description(f"Training loss: {train_loss:.4f}")
 
             # Model checkpointing
@@ -214,4 +241,19 @@ def main(cfg: dict) -> None:
 
 
 if __name__ == "__main__":
-    main(cfg)
+    # # Lance le profiling et sauvegarde les résultats dans 'profile_results.prof'
+    # profiler = cProfile.Profile()
+    # profiler.enable()
+
+    main(cfg)  # Votre fonction principale
+
+    # profiler.disable()
+
+    # # Sauvegarde les résultats
+    # profiler.dump_stats("profile_results.prof")
+
+    # # Optionnel: Affiche un résumé dans la console
+    # stream = io.StringIO()
+    # stats = pstats.Stats(profiler, stream=stream)
+    # stats.strip_dirs().sort_stats("cumtime").print_stats(20)
+    # print(stream.getvalue())
