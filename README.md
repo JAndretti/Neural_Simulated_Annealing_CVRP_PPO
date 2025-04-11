@@ -203,7 +203,17 @@ loss = -min(ratio * A, clip(ratio,1-ε,1+ε)*A)
 ```python
 value_loss = 0.5 * (V(s) - R)^2 + gradient_penalty
 ```
+### Testing
+### Scripts Directory
 
+The `Scripts/` folder contains utility scripts for evaluation and visualization:
+
+- **eval.py**: Script to evaluate trained models on generated instances (fixed seed + fast).
+- **eval_on_bdd.py**: Script to evaluate trained models on benchmark datasets (slow).
+- **generate_plot.py**: Plots for comparing model with OR_TOOLS and baseline.
+- **bdd.py**: Exports bdd in a structured format for further analysis/testing.
+
+These scripts are designed to streamline post-training analysis and provide insights into model performance.
 
 ## 📊 Monitoring
 
