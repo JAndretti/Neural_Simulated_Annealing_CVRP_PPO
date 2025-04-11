@@ -88,7 +88,6 @@ def ppo(
         old_log_probs = (
             torch.stack(batch.old_log_probs).view(nt * n_problems, -1).to(device)
         )
-
         # Compute state values V(s) and V(s')
         state_values = critic(state).view(nt, n_problems, 1)
         next_state_values = critic(next_state).view(nt, n_problems, 1)
@@ -102,7 +101,9 @@ def ppo(
             # Get the sequence for this problem
             problem_rewards = torch.stack(
                 [t.reward[problem_idx] for t in transitions]
-            ).to(device)
+            ).to(
+                device
+            )  # TODO do it outide the loop and index it within the loop
             problem_values = state_values[:, problem_idx]
             problem_next_values = next_state_values[:, problem_idx]
             problem_gammas = gamma[:, problem_idx]
@@ -145,6 +146,10 @@ def ppo(
     for epoch in range(ppo_epochs):
         actor_opt.zero_grad()
         critic_opt.zero_grad()
+
+        total_actor_loss = 0
+        total_critic_loss = 0
+        num_batches = 0
 
         for batch_idx in torch.split(batches[epoch], batch_size):
             if len(batch_idx) <= 1:  # Skip batches that are too small
@@ -205,9 +210,13 @@ def ppo(
                 print("NaN detected in loss calculations. Skipping batch.")
                 continue
 
-            # Backward pass with gradient clipping
+            # # Backward pass with gradient clipping
             actor_loss.backward()
             critic_loss.backward()
+
+            total_actor_loss += actor_loss.item()
+            total_critic_loss += critic_loss.item()
+            num_batches += 1
 
             # Gradient clipping: ||∇θ|| ≤ clip_norm
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
@@ -234,5 +243,4 @@ def ppo(
             # Update parameters
             actor_opt.step()
             critic_opt.step()
-
-    return actor_loss.item(), critic_loss.item()
+    return total_actor_loss / num_batches, total_critic_loss / num_batches
