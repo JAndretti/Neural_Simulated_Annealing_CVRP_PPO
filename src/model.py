@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from utils import repeat_to
 
+from functools import lru_cache
+
 
 class SAModel(nn.Module):
     def __init__(self, device: str = "cpu") -> None:
@@ -54,13 +56,10 @@ class CVRPActorPairs(SAModel):
         self.net = nn.Sequential(
             nn.Linear(self.input_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
-            nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
-            nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
-            nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, 1, bias=False, device=device),
         ).to(device)
 
@@ -157,11 +156,10 @@ class CVRPActorPairs(SAModel):
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
+
         pair_features, idx1, idx2, mask, heuristic_indices = (
             self._prepare_features_and_pairs(state)
-        )
-
-        # Forward pass
+        )  # Forward pass
         outputs = self.forward(pair_features)
 
         logits = outputs[..., 0]
@@ -211,6 +209,7 @@ class CVRPActorPairs(SAModel):
         log_probs = torch.log(probs.gather(1, action_idx.view(-1, 1)))
         return log_probs[..., 0]
 
+    @lru_cache(maxsize=1000)
     def _prepare_features_and_pairs(
         self, state: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -269,12 +268,17 @@ class CVRPActorPairs(SAModel):
 
 
 class CVRPActor(SAModel):
+
     def __init__(
-        self, embed_dim: int, c1: int = 7, c2: int = 13, device: str = "cpu"
+        self,
+        embed_dim: int = 32,
+        c: int = 12,
+        device: str = "cpu",
+        mixed_heuristic: bool = False,
     ) -> None:
         super().__init__(device)
-        self.c1_state_dim = c1
-        self.c2_state_dim = c2
+        self.mixed_heuristic = mixed_heuristic
+        self.c1_state_dim = c
 
         # Mean and std computation
         self.city1_net = nn.Sequential(
@@ -282,20 +286,18 @@ class CVRPActor(SAModel):
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
             nn.Linear(embed_dim, 1, bias=False, device=device),
-        )
+        ).to(device)
+        self.c2_state_dim = c * 2 if mixed_heuristic else c * 2 - 2
+
         # Mean and std computation
         self.city2_net = nn.Sequential(
             nn.Linear(self.c2_state_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, bias=True, device=device),
             nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
             nn.Linear(embed_dim, 1, bias=False, device=device),
-        )
+        ).to(device)
 
         self.city1_net.apply(self.init_weights)
         self.city2_net.apply(self.init_weights)
@@ -303,6 +305,7 @@ class CVRPActor(SAModel):
     def sample_from_logits(
         self, logits: torch.Tensor, greedy: bool = False, one_hot: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample actions from logits using either greedy or multinomial sampling."""
         n_problems, problem_dim = logits.shape
         probs = torch.softmax(logits, dim=-1)
 
@@ -321,50 +324,20 @@ class CVRPActor(SAModel):
     def get_logits(
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pb = kwargs["problem"]
-        n_problems, problem_dim, dim = state.shape
-        num_extra_features = dim - 3
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
-
-        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
+        """Compute logits and log probabilities for given state and action."""
+        c1_state, n_problems, mask = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
-        # c2 = action[:, 1]
 
         # City 1 net
-        mask = ~(state[:, :, 0] != 0)
         logits = self.city1_net(c1_state)[..., 0]
-        logits[mask] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs)
 
-        c1_prev = (c1 - 1) % problem_dim
-        c1_next = (c1 + 1) % problem_dim
-
-        # Second city encoding: [base.prev, base, base.next,
-        #                        target.prev, target, target.next]
-        arange = torch.arange(n_problems)
-        c1_coords = coords[arange, c1]
-        c1_prev_coords = coords[arange, c1_prev]
-        c1_next_coords = coords[arange, c1_next]
-        base = torch.cat([c1_coords, c1_prev_coords, c1_next_coords], -1)[:, None, :]
-        base = repeat_to(base, c1_state)
-        c2_state = torch.cat([base, c1_state], -1)
-
-        # City 2 net
-        mask = ~(
-            pb.allowed_permutations(
-                state[:, :, 0].unsqueeze(-1).long(), c1.unsqueeze(-1).long()
-            )
-        )
+        c2_state = self._prepare_features_city2(
+            c1_state, c1, n_problems
+        )  # Second city encoding
         logits = self.city2_net(c2_state)[..., 0]
-        logits[mask] = -float("inf")
 
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs)
@@ -374,129 +347,157 @@ class CVRPActor(SAModel):
     def baseline_sample(
         self, state: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, None]:
+        """Generate baseline sample using uniform probabilities."""
         n_problems, problem_dim, _ = state.shape
-        pb = kwargs["problem"]
+        x = state[:, :, 0]
 
         # Sample c1 at random
-        mask = ~(state[:, :, 0] != 0)
-        logits = torch.ones(mask.shape[0], mask.shape[1]).to(self.generator.device)
-        logits[mask] = -float("inf")
+        mask = x.squeeze(-1) != 0
+        x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
+        logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
-        # Compute mask and sample c2
-        mask = ~(
-            pb.allowed_permutations(
-                state[:, :, 0].unsqueeze(-1).long(), c1.unsqueeze(-1).long()
+        # sample c2
+        if self.mixed_heuristic:
+            logits = torch.ones(n_problems, x.shape[1] * 2).to(self.generator.device)
+            c2, _ = self.sample_from_logits(logits, one_hot=False)
+            heuristic_idx = c2 % 2
+            action = torch.cat(
+                [
+                    c1.view(-1, 1).long(),
+                    c2.view(-1, 1).long(),
+                    heuristic_idx.view(-1, 1).long(),
+                ],
+                dim=-1,
             )
-        )
-        logits = torch.ones(mask.shape[0], mask.shape[1]).to(self.generator.device)
-        logits[mask] = -float("inf")
-        c2, _ = self.sample_from_logits(logits, one_hot=False)
-
-        # Construct action tensor and return
-        action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
+        else:
+            c2, _ = self.sample_from_logits(logits, one_hot=False)
+            action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
         return action, None
 
     def sample(
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pb = kwargs["problem"]
-        n_problems, problem_dim, dim = state.shape
-
-        num_extra_features = dim - 3
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
-
-        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
-
-        # City 1 net
-        mask = ~(state[:, :, 0] != 0)
+        """Sample an action pair from the current state."""
+        c1_state, n_problems, mask = self._prepare_features_city1(state)
         logits = self.city1_net(c1_state)[..., 0]
-        logits[mask] = -float("inf")
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
-        c1_prev = (c1 - 1) % problem_dim
-        c1_next = (c1 + 1) % problem_dim
-
-        # Second city encoding: [base.prev, base, base.next,
-        #                        target.prev, target, target.next]
-        arange = torch.arange(n_problems)
-        c1_coords = coords[arange, c1]
-        c1_prev_coords = coords[arange, c1_prev]
-        c1_next_coords = coords[arange, c1_next]
-        base = torch.cat([c1_coords, c1_prev_coords, c1_next_coords], -1)[:, None, :]
-
-        base = repeat_to(base, c1_state)
-        c2_state = torch.cat([base, c1_state], -1)
+        c2_state = self._prepare_features_city2(
+            c1_state, c1, n_problems
+        )  # Second city encoding
 
         # City 2 net
-        mask = ~(
-            pb.allowed_permutations(
-                state[:, :, 0].unsqueeze(-1).long(), c1.unsqueeze(-1).long()
-            )
-        )
         logits = self.city2_net(c2_state)[..., 0]
-        logits[mask] = -float("inf")
         c2, log_probs_c2 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
         # Construct action and log-probabilities
-        action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
+        if self.mixed_heuristic:
+            c2_idx = c2 // 2  # Index of the pair
+            heuristic_idx = c2 % 2  # Index of the heuristic
+            action = torch.cat(
+                [
+                    c1.view(-1, 1).long(),
+                    c2_idx.view(-1, 1).long(),
+                    heuristic_idx.view(-1, 1).long(),
+                ],
+                dim=-1,
+            )
+        else:
+            # Concatenate c1 and c2
+            action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
+
         log_probs = log_probs_c1 + log_probs_c2
         return action, log_probs[..., 0], mask
 
     def evaluate(
-        self, state: torch.Tensor, action: torch.Tensor, mask2: torch.Tensor, **kwargs
+        self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> torch.Tensor:
-        n_problems, problem_dim, dim = state.shape
-
-        num_extra_features = dim - 3  # Nombre de caractéristiques supplémentaires
-        x, coords, *extra_features = torch.split(
-            state, [1, 2] + [1] * num_extra_features, dim=-1
-        )
-
-        coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
-
-        c1_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
+        """Evaluate log probabilities of given actions."""
+        c1_state, n_problems, mask = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
-        c2 = action[:, 1]
+        if self.mixed_heuristic:
+            # When mixed_heuristic is True, action contains [c1, c2_idx, heuristic_idx]
+            c2_idx = action[:, 1]
+            heuristic_idx = action[:, 2]
+            # Reconstruct the composite c2 action
+            c2 = c2_idx * 2 + heuristic_idx
+        else:
+            # Standard case: action contains [c1, c2]
+            c2 = action[:, 1]
 
         # City 1 net
-        mask = ~(state[:, :, 0] != 0)
         logits = self.city1_net(c1_state)[..., 0]
-        logits[mask] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs.gather(1, c1.view(-1, 1)))
 
-        c1_prev = (c1 - 1) % problem_dim
-        c1_next = (c1 + 1) % problem_dim
-
-        # Second city encoding: [base.prev, base, base.next,
-        #                        target.prev, target, target.next]
-        arange = torch.arange(n_problems)
-        c1_coords = coords[arange, c1]
-        c1_prev_coords = coords[arange, c1_prev]
-        c1_next_coords = coords[arange, c1_next]
-        base = torch.cat([c1_coords, c1_prev_coords, c1_next_coords], -1)[:, None, :]
-        base = repeat_to(base, c1_state)
-        c2_state = torch.cat([base, c1_state], -1)
+        c2_state = self._prepare_features_city2(
+            c1_state, c1, n_problems
+        )  # Second city encoding
 
         # City 2 net
         logits = self.city2_net(c2_state)[..., 0]
-        logits[mask2] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs.gather(1, c2.view(-1, 1)))
 
         # Construct log-probabilities and return
         log_probs = log_probs_c1 + log_probs_c2
         return log_probs[..., 0]
+
+    def _prepare_features_city1(
+        self, state: torch.Tensor
+    ) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        """Helper method to prepare features from state."""
+        n_problems, problem_dim, dim = state.shape
+
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * (dim - 3), dim=-1
+        )
+
+        # Gather coordinate information
+        coords = coords.gather(1, x.long().expand_as(coords))
+        coords_prev = torch.roll(coords, 1, 1)
+        coords_next = torch.roll(coords, -1, 1)
+        # Add temp and time to the concatenated state
+        c_state = torch.cat(
+            [
+                coords,
+                coords_prev,
+                coords_next,
+            ]
+            + extra_features,
+            -1,
+        )
+        mask = x.squeeze(-1) != 0
+        c_state = torch.stack([c[m] for c, m in zip(c_state, mask)], dim=0)
+        return c_state, n_problems, mask
+
+    def _prepare_features_city2(
+        self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
+    ) -> Tuple[torch.Tensor]:
+        """Helper method to prepare features from state."""
+        # Second city encoding
+        arange = torch.arange(n_problems)
+        c1_val = c1_state[arange, c1]
+        base = torch.cat([c1_val], -1)[:, None, :]
+
+        base = repeat_to(base, c1_state)
+        c1_state = c1_state[:, :, :-2]
+        c2_state = torch.cat([base, c1_state], -1)
+        if self.mixed_heuristic:
+            # Duplicate each pair for both heuristic options
+            n_row = c2_state.shape[1]
+            c2_state = c2_state.repeat_interleave(2, dim=1)
+
+            # Add one-hot encoding for heuristic selection
+            heuristic_indices = torch.arange(2, device=self.device).repeat(n_row)
+            heuristic_one_hot = F.one_hot(heuristic_indices, num_classes=2).repeat(
+                n_problems, 1, 1
+            )
+            # Concatenate the one-hot encoding to the features
+            c2_state = torch.cat([c2_state, heuristic_one_hot], dim=-1)
+        return c2_state
 
 
 class CVRPCritic(nn.Module):
@@ -506,10 +507,8 @@ class CVRPCritic(nn.Module):
         super().__init__()
         self.q_func = nn.Sequential(
             nn.Linear(c, embed_dim, device=device),
-            nn.LayerNorm(embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim, device=device),
-            nn.LayerNorm(embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, 1, device=device),
         ).to(device)
