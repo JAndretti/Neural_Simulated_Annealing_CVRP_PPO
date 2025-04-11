@@ -202,8 +202,8 @@ def sa(
             next_state = problem.to_state(
                 current_solution,
                 next_temp,
-                torch.tensor(1 - (step / config["OUTER_STEPS"])).to(device),
-            ).to(device)
+                torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device),
+            )
 
             # Reward calculation for reinforcement learning
             if config["METHOD"] == "ppo":

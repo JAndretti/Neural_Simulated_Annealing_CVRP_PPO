@@ -18,15 +18,14 @@ def greedy_init_batch(demands: torch.Tensor, capacity: int) -> torch.Tensor:
         with depot visits inserted to respect capacity constraints
     """
     batch_size, num_nodes = demands.size()
+    device = demands.device
 
     # Initialize solution tensor with 40% padding for depot insertions
     max_route_length = num_nodes + int(num_nodes * 0.40)
-    routes = torch.zeros(
-        batch_size, max_route_length, dtype=torch.long, device=demands.device
-    )
+    routes = torch.zeros(batch_size, max_route_length, dtype=torch.long, device=device)
 
     # Prepare client indices (excluding depot 0)
-    clients = torch.arange(1, num_nodes, device=demands.device)
+    clients = torch.arange(1, num_nodes, device=device)
     clients = clients.repeat(batch_size, 1)  # [batch_size, num_nodes-1]
 
     # Shuffle clients differently for each problem in batch
@@ -35,16 +34,16 @@ def greedy_init_batch(demands: torch.Tensor, capacity: int) -> torch.Tensor:
     # Add depot (0) at start of each route
     clients = torch.cat(
         [
-            torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=demands.device),
+            torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=device),
             clients,
         ],
         dim=1,
     )
 
     # Initialize tracking variables
-    remaining_capacity = torch.full((batch_size,), capacity, device=demands.device)
-    route_positions = torch.zeros(batch_size, dtype=torch.long, device=demands.device)
-    vehicle_count = torch.ones(batch_size, device=demands.device)
+    remaining_capacity = torch.full((batch_size,), capacity, device=device)
+    route_positions = torch.zeros(batch_size, dtype=torch.long, device=device)
+    vehicle_count = torch.ones(batch_size, device=device)
 
     # Build routes by sequentially assigning clients
     while (clients >= 0).any():  # While clients remain unassigned
@@ -109,24 +108,23 @@ def construct_cvrp_solution(
     """
     x = x.squeeze(-1)  # Remove trailing dimension if present
     batch_size, num_nodes = demands.shape
+    device = x.device
 
     # Initialize solution with padding for depot insertions
     max_route_length = num_nodes + int(num_nodes * 0.40)
-    routes = torch.zeros(
-        batch_size, max_route_length, dtype=torch.long, device=x.device
-    )
+    routes = torch.zeros(batch_size, max_route_length, dtype=torch.long, device=device)
 
     # Add depot at start of each route
     x = torch.cat(
-        [torch.zeros(batch_size, 1, dtype=torch.long, device=x.device), x], dim=1
+        [torch.zeros(batch_size, 1, dtype=torch.long, device=device), x], dim=1
     )
 
     # Get demands in current route order
     ordered_demands = torch.gather(demands, 1, x)
 
     # Initialize tracking variables
-    remaining_capacity = torch.full((batch_size,), capacity, device=x.device)
-    route_pos = torch.zeros(batch_size, dtype=torch.long, device=x.device)
+    remaining_capacity = torch.full((batch_size,), capacity, device=device)
+    route_pos = torch.zeros(batch_size, dtype=torch.long, device=device)
 
     for i in range(num_nodes):
         current_client = x[:, i]
