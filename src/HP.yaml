@@ -1,10 +1,10 @@
 # =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"
-GROUP: "CVRP 2opt_swap_mix"
-LOG: False                  # Enable WandB logging
+GROUP: "bench_model_temp"          # Experiment group
+LOG: True                     # Enable WandB logging
 
 # =============== Hardware & Setup ===============
-DEVICE: "mps"              # cpu/cuda/mps
+DEVICE: "cpu"              # cpu/cuda/mps
 SEED: 42                   # Random seed
 
 # =============== CVRP Problem ===============
@@ -17,33 +17,31 @@ HEURISTIC: "mix"           # Local search method
 
 # =============== Model Architecture ===============
 EMBEDDING_DIM: 32          # Embedding dimension
-C1: 8                      # Actor layer 1 channels
-C2: 14                     # Actor layer 2 channels
-C: 12                      # Critic layer channels
-PAIRS: True                # Pair model 
+NUM_H_LAYERS: 2             # Number of layers
+PAIRS: False                # Pair model 
 
 # =============== Training ===============
-N_EPOCHS: 500              # Total training epochs
+N_EPOCHS: 250              # Total training epochs
 LR: 0.0001                 # Learning rate
 WEIGHT_DECAY: 0.01         # L2 regularization
-BATCH_SIZE: 256            # Training batch size
+BATCH_SIZE: 512            # Training batch size
 
 # =============== Simulated Annealing ===============
-INIT_TEMP: 1               # Starting temperature
-STOP_TEMP: 0.01            # Final temperature
+INIT_TEMP: 1              # Starting temperature
+STOP_TEMP: 0.01                # Final temperature
 OUTER_STEPS: 100           # Temperature steps
 INNER_STEPS: 1             # Steps per temperature
 SCHEDULER: "lam"           # Cooling schedule
 
 # =============== PPO Algorithm ===============
 METHOD: "ppo"              # Training algorithm
-PPO_EPOCHS: 10             # PPO optimization steps
-TRACE_DECAY: 0.9           # GAE lambda parameter
+PPO_EPOCHS: 5              # PPO optimization steps
+TRACE_DECAY: 0.99           # GAE lambda parameter
 EPS_CLIP: 0.25             # Policy clip range
 LOSS: "min_cost"           # Optimization objective
 REWARD: "immediate"        # Reward calculation
-GAMMA: 0.9                 # Discount factor
-N_STEP: 5                  # Multi-step returns
+GAMMA: 0.99                 # Discount factor
+N_STEP: 30                 # Multi-step returns
 ENT_COEF: 0.01             # Entropy coefficient
 TARGET_KL: 0.01            # Target KL divergence
 GP_LAMBDA: 0.01            # Gradient penalty weight

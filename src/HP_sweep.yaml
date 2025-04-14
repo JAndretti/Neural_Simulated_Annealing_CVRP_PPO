@@ -1,10 +1,17 @@
-N_STEP: 
-- 5
-- 30
-- 50
-- 100
+# =============== Hyperparameter Sweep ===============
+PAIRS: 
+- True
+- False
 
-HEURISTIC:
-- "two_opt"
-- "swap"
-- "mix"
+NUM_H_LAYERS: 
+- 1
+- 2
+- 3
+
+INIT_TEMP:
+- 100
+- 1
+
+STOP_TEMP: 
+- 0.01
+- 0.1 
