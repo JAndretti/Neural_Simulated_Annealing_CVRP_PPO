@@ -209,6 +209,7 @@ def main(cfg: dict) -> None:
                     init_x_test,
                     cfg,
                 )
+                train_loss = torch.mean(test["min_cost"])
 
             # Logging
             if cfg["LOG"]:
@@ -240,7 +241,6 @@ def main(cfg: dict) -> None:
                 WandbLogger.log(logs)
 
             # Update progress bar
-            train_loss = torch.mean(test["min_cost"]) if epoch % 10 == 0 else actor_loss
             progress_bar.set_description(f"Training loss: {train_loss:.4f}")
 
             # Model checkpointing
