@@ -1,4 +1,5 @@
 import yaml
+from rich import print
 import random
 import subprocess
 from itertools import product
@@ -111,6 +112,9 @@ if __name__ == "__main__":
     hyperparameter_names, hyperparameter_list = read_YAML_hyperparameters_sweep(
         HYPERPARAMETERS_PATH
     )
+
+    # Print the number of configurations to be tested
+    print(f"Number of configurations to be tested: {len(hyperparameter_list)}")
 
     # Shuffle the parameter configurations for the random search
     if SWEEP_MODE == "random":
