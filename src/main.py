@@ -155,16 +155,24 @@ def main(cfg: dict) -> None:
     # Initialize models
     if cfg["PAIRS"]:
         actor = CVRPActorPairs(
+            cfg["EMBEDDING_DIM"],
+            num_hidden_layers=cfg["NUM_H_LAYERS"],
             device=cfg["DEVICE"],
             mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
         )
     else:
         actor = CVRPActor(
+            cfg["EMBEDDING_DIM"],
+            num_hidden_layers=cfg["NUM_H_LAYERS"],
             device=cfg["DEVICE"],
             mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
         )
     actor.manual_seed(cfg["SEED"])
-    critic = CVRPCritic(cfg["EMBEDDING_DIM"], cfg["C"], device=cfg["DEVICE"])
+    critic = CVRPCritic(
+        cfg["EMBEDDING_DIM"],
+        num_hidden_layers=cfg["NUM_H_LAYERS"],
+        device=cfg["DEVICE"],
+    )
 
     # Initialize optimizers
     actor_opt = torch.optim.Adam(
@@ -193,13 +201,14 @@ def main(cfg: dict) -> None:
                 train_results
             )
 
-            # Test phase
-            test = test_model(
-                actor,
-                problem_test,
-                init_x_test,
-                cfg,
-            )
+            # Test phase every 10 epochs
+            if epoch % 10 == 0:
+                test = test_model(
+                    actor,
+                    problem_test,
+                    init_x_test,
+                    cfg,
+                )
 
             # Logging
             if cfg["LOG"]:
@@ -208,24 +217,30 @@ def main(cfg: dict) -> None:
                     "Actor_loss": actor_loss,
                     "Critic_loss": critic_loss,
                     "Train_loss": actor_loss + 0.5 * critic_loss,
-                    # Cost metrics
-                    "Min_cost": torch.mean(test["min_cost"]),
-                    # Improvement metrics
-                    "N_gain": torch.mean(test["ngain"]),
-                    "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
-                    # Search statistics
-                    "Acceptance_rate": torch.mean(test["n_acc"]),
-                    "Rejection_rate": torch.mean(test["n_rej"]),
                     # Gradient monitoring
                     "Avg_actor_grad": avg_actor_grad,
                     "Avg_critic_grad": avg_critic_grad,
                 }
-                if cfg["HEURISTIC"] == "mix":
-                    logs["ratio_heuristic"] = test["ratio"]
+                if epoch % 10 == 0:
+                    # Additional logs every 10 epochs
+                    logs.update(
+                        {
+                            # Cost metrics
+                            "Min_cost": torch.mean(test["min_cost"]),
+                            # Improvement metrics
+                            "N_gain": torch.mean(test["ngain"]),
+                            "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
+                            # Search statistics
+                            "Acceptance_rate": torch.mean(test["n_acc"]),
+                            "Rejection_rate": torch.mean(test["n_rej"]),
+                        }
+                    )
+                    if cfg["HEURISTIC"] == "mix":
+                        logs["ratio_heuristic"] = test["ratio"]
                 WandbLogger.log(logs)
 
             # Update progress bar
-            train_loss = torch.mean(test["min_cost"])
+            train_loss = torch.mean(test["min_cost"]) if epoch % 10 == 0 else actor_loss
             progress_bar.set_description(f"Training loss: {train_loss:.4f}")
 
             # Model checkpointing
@@ -234,7 +249,7 @@ def main(cfg: dict) -> None:
                 WandbLogger.log_model(
                     save_func=save_model,
                     model=actor,
-                    val_loss=train_loss.item(),
+                    val_loss=(train_loss.item()),
                     epoch=epoch,
                     model_name=model_name,
                 )
