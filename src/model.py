@@ -9,6 +9,23 @@ from utils import repeat_to
 from functools import lru_cache
 
 
+def create_network(input_dim, embed_dim, num_hidden_layers, device):
+    layers = []
+    # Couche d'entrée
+    layers.append(nn.Linear(input_dim, embed_dim, bias=True, device=device))
+    layers.append(nn.ReLU())
+
+    # Couches cachées
+    for _ in range(num_hidden_layers):
+        layers.append(nn.Linear(embed_dim, embed_dim, bias=True, device=device))
+        layers.append(nn.ReLU())
+
+    # Couche de sortie
+    layers.append(nn.Linear(embed_dim, 1, bias=False, device=device))
+
+    return nn.Sequential(*layers).to(device)
+
+
 class SAModel(nn.Module):
     def __init__(self, device: str = "cpu") -> None:
         super().__init__()
@@ -45,6 +62,7 @@ class CVRPActorPairs(SAModel):
         self,
         embed_dim: int = 32,
         c: int = 22,
+        num_hidden_layers: int = 2,
         device: str = "cpu",
         mixed_heuristic: bool = False,
     ) -> None:
@@ -52,16 +70,12 @@ class CVRPActorPairs(SAModel):
         self.mixed_heuristic = mixed_heuristic
 
         self.input_dim = c + 2 if mixed_heuristic else c
-
-        self.net = nn.Sequential(
-            nn.Linear(self.input_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, 1, bias=False, device=device),
-        ).to(device)
+        self.net = create_network(
+            self.input_dim,
+            embed_dim,
+            num_hidden_layers=num_hidden_layers,
+            device=device,
+        )
 
         self.net.apply(self.init_weights)
 
@@ -273,6 +287,7 @@ class CVRPActor(SAModel):
         self,
         embed_dim: int = 32,
         c: int = 12,
+        num_hidden_layers: int = 2,
         device: str = "cpu",
         mixed_heuristic: bool = False,
     ) -> None:
@@ -281,23 +296,21 @@ class CVRPActor(SAModel):
         self.c1_state_dim = c
 
         # Mean and std computation
-        self.city1_net = nn.Sequential(
-            nn.Linear(self.c1_state_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, 1, bias=False, device=device),
-        ).to(device)
+        self.city1_net = create_network(
+            self.c1_state_dim,
+            embed_dim,
+            num_hidden_layers=num_hidden_layers,
+            device=device,
+        )
         self.c2_state_dim = c * 2 if mixed_heuristic else c * 2 - 2
 
         # Mean and std computation
-        self.city2_net = nn.Sequential(
-            nn.Linear(self.c2_state_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, bias=True, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, 1, bias=False, device=device),
-        ).to(device)
+        self.city2_net = create_network(
+            self.c2_state_dim,
+            embed_dim,
+            num_hidden_layers=num_hidden_layers,
+            device=device,
+        )
 
         self.city1_net.apply(self.init_weights)
         self.city2_net.apply(self.init_weights)
@@ -503,15 +516,20 @@ class CVRPActor(SAModel):
 class CVRPCritic(nn.Module):
     """Critic network for CVRP that estimates state values."""
 
-    def __init__(self, embed_dim: int, c: int = 7, device: str = "cpu") -> None:
+    def __init__(
+        self,
+        embed_dim: int,
+        c: int = 12,
+        num_hidden_layers: int = 2,
+        device: str = "cpu",
+    ) -> None:
         super().__init__()
-        self.q_func = nn.Sequential(
-            nn.Linear(c, embed_dim, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim, device=device),
-            nn.ReLU(),
-            nn.Linear(embed_dim, 1, device=device),
-        ).to(device)
+        self.q_func = create_network(
+            c,
+            embed_dim,
+            num_hidden_layers=num_hidden_layers,
+            device=device,
+        )
         self.q_func.apply(self.init_weights)
 
     @staticmethod
