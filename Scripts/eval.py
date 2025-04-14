@@ -5,35 +5,25 @@ import numpy as np
 import random
 import warnings
 import yaml
+import glob
 
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from problem import CVRP
 from sa import sa
-from model import CVRPActorPairs
+from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 
 # Suppress warnings if needed
 warnings.filterwarnings("ignore")
 
 # Constants
-PATH = "wandb/Neural_Simulated_Annealing/models/"
-RESULTS_FILE = "res/res_model.csv"
-MODEL_NAMES = [
-    "20250404_025649_rkxgs6ga",
-    "20250403_200902_28z10n0a",
-    "20250405_053104_yh9z35z2",
-    "20250405_044605_jh94xgch",
-    "20250404_090907_zi1rvs8g",
-    "20250404_223057_pkcua1in",
-    "20250403_200902_hwzuk154",
-    "20250404_160429_qfifvsbc",
-    "20250404_154956_wmuzlbls",
-    "20250404_092956_lqq1yf4w",
-    "20250404_221246_wvrdjdcv",
-    "20250404_023801_x70b5bv2",
-]
+PATH = "wandb/Neural_Simulated_Annealing/"
+FOLDER = "bench_model_temp"
+RESULTS_FILE = f"res/models_res/res_model_{FOLDER}.csv"
+MODEL_NAMES = glob.glob(os.path.join(PATH, FOLDER, "models", "*"))
+
 
 # Configuration
 CFG = {
@@ -42,45 +32,32 @@ CFG = {
     "MAX_LOAD": 30,
     "CLUSTERING": False,
     "DEVICE": "cpu",
-    "EMBEDDING_DIM": 32,
-    "INIT_TEMP": 1.0,
-    "STOP_TEMP": 0.01,
     "INNER_STEPS": 1,
     "OUTER_STEPS": 1000,
-    "SCHEDULER": "lam",
-    "METHOD": "ppo",
-    "REWARD": "immediate",
-    "GAMMA": 0.9,
-    "name": None,
-    "HEURISTIC": "mix",
+    "SCHEDULER": "lam",  # unused but mandatory, model value will be used
+    "HEURISTIC": "mix",  # unused but mandatory, model value will be used
+    "name": None,  # unused but mandatory, model value will be used
 }
 
 
-def get_heuristic_for_model(model_name):
+def get_HP_for_model(model_name):
     """Extract heuristic from HP.yaml file."""
-    hp_file = os.path.join(PATH, model_name, "HP.yaml")
+    hp_file = os.path.join(model_name, "HP.yaml")
     try:
         with open(hp_file, "r") as file:
             content = file.read()
             content_clean = content.replace("!!python/object:HP._HP", "")
             hp_data = yaml.unsafe_load(content_clean)
-            return (
-                hp_data.get("config", {}).get("HEURISTIC")
-                if isinstance(hp_data, dict)
-                else None
-            )
+            if isinstance(hp_data, dict):
+                for key in hp_data.get("config", {}):
+                    if key in CFG:
+                        hp_data["config"][key] = CFG[key]
+                return hp_data.get("config", {})
+            else:
+                return None
     except Exception as e:
         print(f"Error for reading HP.yaml file for mdoel : {model_name}: {e}")
         return None
-
-
-def init_heuristic(model_name):
-    """Initialize heuristic based on model names."""
-    # Get heuristic from model name
-    heuristic = get_heuristic_for_model(model_name)
-    if heuristic is None:
-        heuristic = "mix"
-    CFG["HEURISTIC"] = heuristic
 
 
 def extract_loss(filename):
@@ -102,18 +79,12 @@ def load_model(model, folder):
     return model
 
 
-def initialize_results_df():
+def initialize_results_df(columns: list):
     """Initialize or load results DataFrame."""
     if os.path.exists(RESULTS_FILE):
         print(f"Loading existing results file from {RESULTS_FILE}")
         return pd.read_csv(RESULTS_FILE)
-    return pd.DataFrame(
-        columns=[
-            "model",
-            "initial_cost",
-            "final_cost",
-        ]
-    )
+    return pd.DataFrame(columns=columns)
 
 
 def set_seed(seed=0):
@@ -152,25 +123,36 @@ def perform_test(
 ):
     """Main execution function."""
 
-    # Initialize heuristic
-    init_heuristic(model_name)
+    # init HP
+    HP = get_HP_for_model(model_name)
+
     # Set heuristic in problem
-    problem.set_heuristic(CFG["HEURISTIC"])
+    problem.set_heuristic(HP["HEURISTIC"])
 
+    # Initialize models
+    if HP["PAIRS"]:
+        actor = CVRPActorPairs(
+            HP["EMBEDDING_DIM"],
+            num_hidden_layers=HP["NUM_H_LAYERS"],
+            device=HP["DEVICE"],
+            mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
+        )
+    else:
+        actor = CVRPActor(
+            HP["EMBEDDING_DIM"],
+            num_hidden_layers=HP["NUM_H_LAYERS"],
+            device=HP["DEVICE"],
+            mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
+        )
     # Load model
-    actor = CVRPActorPairs(
-        device="cpu", mixed_heuristic=True if CFG["HEURISTIC"] == "mix" else False
-    )
-    FULL_PATH = os.path.join(PATH, model_name)
-
-    actor = load_model(actor, FULL_PATH)
+    actor = load_model(actor, model_name)
 
     # Run simulated annealing
     test = sa(
         actor,
         problem,
         init_x,
-        CFG,
+        HP,
         replay_buffer=None,
         baseline=False,
         greedy=False,
@@ -179,22 +161,57 @@ def perform_test(
     return final_cost
 
 
+def extract_differing_keys(model_names):
+    """Extract keys with differing values across HP.yaml files."""
+    all_hp_data = []
+    for model_name in model_names:
+        HP = get_HP_for_model(model_name)
+        if HP:
+            all_hp_data.append(HP)
+
+    differing_keys = set()
+    if all_hp_data:
+        keys = all_hp_data[0].keys()
+        for key in keys:
+            values = {hp.get(key) for hp in all_hp_data}
+            if len(values) > 1:  # Key has differing values
+                differing_keys.add(key)
+    return differing_keys
+
+
+def add_hp_to_results(model_name, differing_keys):
+    """Extract HP values for the given model and return as a dictionary."""
+    HP = get_HP_for_model(model_name)
+    if not HP:
+        return {key: None for key in differing_keys}
+    return {key: HP.get(key, None) for key in differing_keys}
+
+
 if __name__ == "__main__":
     set_seed()
-    # Initialize results DataFrame
-    new_df = initialize_results_df()
     problem, init_x, init_cost = init_pb()
+
+    # Extract keys with differing values across HP.yaml files
+    differing_keys = extract_differing_keys(MODEL_NAMES)
+
+    # Initialize results DataFrame with dynamic columns
+    columns = ["model", "initial_cost", "final_cost"] + list(differing_keys)
+    new_df = initialize_results_df(columns)
+
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
         final_cost = perform_test(model_name, problem, init_x)
+        # Extract HP values for the current model
+        hp_values = add_hp_to_results(model_name, differing_keys)
         # Add results to DataFrame
         new_df = pd.concat(
             [
                 new_df,
                 pd.DataFrame(
                     {
-                        "model": [model_name],
+                        "model": [model_name.split("/")[-1]],
                         "initial_cost": [init_cost.item()],
                         "final_cost": [final_cost.item()],
+                        **hp_values,
                     }
                 ),
             ],
