@@ -184,18 +184,18 @@ def sa(
             if inner_step == config["INNER_STEPS"] - 1:
                 next_temp = scheduler.step(step).to(device)
 
-                # Adaptive cooling schedule adjustment
-                if (
-                    max(10, config["OUTER_STEPS"] * 0.1)
-                    == config["OUTER_STEPS"] - step + 1
-                ):
-                    scheduler = Scheduler(
-                        "lam",
-                        T_max=1.0,
-                        T_min=0.01,
-                        step_max=config["OUTER_STEPS"] - step + 1,
-                    )
-                    next_temp = torch.tensor([1], device=device)
+                # # Adaptive cooling schedule adjustment
+                # if (
+                #     max(10, config["OUTER_STEPS"] * 0.1)
+                #     == config["OUTER_STEPS"] - step + 1
+                # ):
+                #     scheduler = Scheduler(
+                #         "lam",
+                #         T_max=1.0,
+                #         T_min=0.01,
+                #         step_max=config["OUTER_STEPS"] - step + 1,
+                #     )
+                #     next_temp = torch.tensor([1], device=device)
                 temperature.append(next_temp)
 
             # Prepare next state
