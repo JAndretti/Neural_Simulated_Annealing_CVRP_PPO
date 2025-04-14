@@ -59,7 +59,11 @@ class WandbLogger:
 
         self.num_models_to_keep = num_models_to_keep
         self.model_dir = os.path.join(
-            WANDB_DIRECTORY, HP["PROJECT"], "models", f"{wandb.run.name}_{wandb.run.id}"
+            WANDB_DIRECTORY,
+            HP["PROJECT"],
+            HP["GROUP"],
+            "models",
+            f"{wandb.run.name}_{wandb.run.id}",
         )
         self.sorted_queue = []
         os.makedirs(self.model_dir, exist_ok=True)
