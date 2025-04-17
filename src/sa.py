@@ -197,11 +197,12 @@ def sa(
                 #     )
                 #     next_temp = torch.tensor([1], device=device)
                 temperature.append(next_temp)
+                model_next_temp = next_temp / config["INIT_TEMP"]
 
             # Prepare next state
             next_state = problem.to_state(
                 current_solution,
-                next_temp,
+                model_next_temp,
                 torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device),
             )
 
