@@ -19,8 +19,9 @@ warnings.filterwarnings("ignore")
 
 # Constants
 PATH = "wandb/Neural_Simulated_Annealing/models/"
+GROUP = "bench_model_temp"
 MODEL_NAME = "20250402_171304_a3bnyrfg"
-FULL_PATH = os.path.join(PATH, MODEL_NAME)
+FULL_PATH = os.path.join(PATH, GROUP, MODEL_NAME)
 RESULTS_FILE = "res/model_on_bdd_swap_vs_2opt.csv"
 HEURISTIC = "mix"
 BATCH_SIZE = 20  # Number of parallel processes
