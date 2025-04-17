@@ -38,15 +38,26 @@ NSA_CVRP_PPO/
 
 ## 🛠️ Installation
 
+### Prerequisites
+
+- Python **3.8** or higher must be installed on your system, if this is the case, then run the command:
+```bash
+pip install uv
+```
+
+Alternatively, you can install [uv](https://docs.astral.sh/uv/getting-started/installation/) with different methods listed on the website
+
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/JAndretti/Neural_Simulated_Annealing_CVRP_PPO.git
 cd Neural_Simulated_Annealing_CVRP_PPO
 ```
-2. Install dependencies:
+2. Install dependencies and setup project:
 ```bash
-pip install -r requirements.txt
+uv run settings.py
 ```
+This will create the environment with the right dependencies, as well as the necessary files  
 3. Set up Weights & Biases:
 - Create an accout (free if you use academic email for personnal research)
 - Create a file src/key.txt and write your personnal key access from wandb
