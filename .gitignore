@@ -14,6 +14,7 @@ train.sh
 !/res/models_res/
 !/res/models_res/read_res.py
 
+profiling/
 *.prof
 
 *test*
