@@ -6,21 +6,19 @@ import torch.nn.functional as F
 
 from utils import repeat_to
 
-from functools import lru_cache
-
 
 def create_network(input_dim, embed_dim, num_hidden_layers, device):
     layers = []
-    # Couche d'entrée
+    # Entry layer
     layers.append(nn.Linear(input_dim, embed_dim, bias=True, device=device))
     layers.append(nn.ReLU())
 
-    # Couches cachées
+    # Hidden layers
     for _ in range(num_hidden_layers):
         layers.append(nn.Linear(embed_dim, embed_dim, bias=True, device=device))
         layers.append(nn.ReLU())
 
-    # Couche de sortie
+    # Output layer
     layers.append(nn.Linear(embed_dim, 1, bias=False, device=device))
 
     return nn.Sequential(*layers).to(device)
@@ -223,7 +221,6 @@ class CVRPActorPairs(SAModel):
         log_probs = torch.log(probs.gather(1, action_idx.view(-1, 1)))
         return log_probs[..., 0]
 
-    @lru_cache(maxsize=1000)
     def _prepare_features_and_pairs(
         self, state: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -459,7 +456,6 @@ class CVRPActor(SAModel):
         log_probs = log_probs_c1 + log_probs_c2
         return log_probs[..., 0]
 
-    @lru_cache(maxsize=1000)
     def _prepare_features_city1(
         self, state: torch.Tensor
     ) -> Tuple[torch.Tensor, int, torch.Tensor]:
@@ -488,7 +484,6 @@ class CVRPActor(SAModel):
         c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
         return c_state, n_problems, mask
 
-    @lru_cache(maxsize=1000)
     def _prepare_features_city2(
         self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
     ) -> Tuple[torch.Tensor]:
