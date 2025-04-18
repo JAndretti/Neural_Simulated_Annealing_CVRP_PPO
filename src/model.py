@@ -459,6 +459,7 @@ class CVRPActor(SAModel):
         log_probs = log_probs_c1 + log_probs_c2
         return log_probs[..., 0]
 
+    @lru_cache(maxsize=1000)
     def _prepare_features_city1(
         self, state: torch.Tensor
     ) -> Tuple[torch.Tensor, int, torch.Tensor]:
@@ -487,6 +488,7 @@ class CVRPActor(SAModel):
         c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
         return c_state, n_problems, mask
 
+    @lru_cache(maxsize=1000)
     def _prepare_features_city2(
         self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
     ) -> Tuple[torch.Tensor]:
