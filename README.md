@@ -17,6 +17,8 @@ NSA_CVRP_PPO/
 ├── requirements.txt # Python dependencies
 ├── launch_HP_sweep # Hyperparameter sweep launcher
 ├── res/ # Results directory
+│ ├── models_res
+│ │ ├── read_res.py # Compare parameters from Hyperparameter sweep
 ├── src/ # Main source code
 │ ├── main.py # Training script
 │ ├── HP.py # Hyperparameter management
@@ -53,7 +55,8 @@ Alternatively, you can install [uv](https://docs.astral.sh/uv/getting-started/in
 git clone https://github.com/JAndretti/Neural_Simulated_Annealing_CVRP_PPO.git
 cd Neural_Simulated_Annealing_CVRP_PPO
 ```
-2. Install dependencies and setup project:
+2. Install dependencies and setup project:  
+If you want to download the database change **DOWNLOAD_DB = False** to **True**, not mandatory since in the folder *bdd* you can find *bdd.pkl* with all important data extract from the BDD.
 ```bash
 uv run settings.py
 ```

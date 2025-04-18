@@ -10,10 +10,14 @@ wandb/
 
 train.sh
 
-bdd/
-
-res/
+/res/**
+!/res/models_res/
+!/res/models_res/read_res.py
 
 *.prof
 
 *test*
+
+bdd/*
+!bdd/bdd.pkl
+!bdd/results_ortools.json
