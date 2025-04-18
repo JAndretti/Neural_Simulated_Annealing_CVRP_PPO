@@ -50,7 +50,7 @@ def get_HP_for_model(model_name):
             hp_data = yaml.unsafe_load(content_clean)
             if isinstance(hp_data, dict):
                 for key in hp_data.get("config", {}):
-                    if key in CFG:
+                    if key in CFG and key not in ["SCHEDULER", "HEURISTIC"]:
                         hp_data["config"][key] = CFG[key]
                 return hp_data.get("config", {})
             else:
