@@ -33,7 +33,7 @@ CFG = {
     "CLUSTERING": False,
     "DEVICE": "cpu",
     "INNER_STEPS": 1,
-    "OUTER_STEPS": 1000,
+    "OUTER_STEPS": 100,
     "SCHEDULER": "lam",  # unused but mandatory, model value will be used
     "HEURISTIC": "mix",  # unused but mandatory, model value will be used
     "name": None,  # unused but mandatory, model value will be used
