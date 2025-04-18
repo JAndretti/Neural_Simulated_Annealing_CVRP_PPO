@@ -238,12 +238,12 @@ class CVRPActorPairs(SAModel):
 
         # Gather coordinate information
         coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
+        coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
+        coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
 
         c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
         mask = x.squeeze(-1) != 0
-        c_state = torch.stack([c[m] for c, m in zip(c_state, mask)], dim=0)
+        c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
 
         # Get all possible pairs
         idx1, idx2 = torch.triu_indices(
@@ -394,6 +394,7 @@ class CVRPActor(SAModel):
         """Sample an action pair from the current state."""
         c1_state, n_problems, mask = self._prepare_features_city1(state)
         logits = self.city1_net(c1_state)[..., 0]
+        # Mask logits
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
         c2_state = self._prepare_features_city2(
@@ -470,8 +471,8 @@ class CVRPActor(SAModel):
 
         # Gather coordinate information
         coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
+        coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
+        coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
         # Add temp and time to the concatenated state
         c_state = torch.cat(
             [
@@ -483,7 +484,7 @@ class CVRPActor(SAModel):
             -1,
         )
         mask = x.squeeze(-1) != 0
-        c_state = torch.stack([c[m] for c, m in zip(c_state, mask)], dim=0)
+        c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
         return c_state, n_problems, mask
 
     def _prepare_features_city2(
@@ -550,8 +551,8 @@ class CVRPCritic(nn.Module):
 
         # Gather current, previous and next coordinates
         coords = coords.gather(1, x.long().expand_as(coords))
-        coords_prev = torch.roll(coords, 1, 1)
-        coords_next = torch.roll(coords, -1, 1)
+        coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
+        coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
 
         state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
         q_values = self.q_func(state).view(n_problems, problem_dim)

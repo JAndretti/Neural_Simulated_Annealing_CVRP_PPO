@@ -570,7 +570,7 @@ class CVRP(Problem):
             Tensor [batch, num_nodes] of inter-node distances
         """
         coords = self.get_coords(solution)
-        next_coords = torch.roll(coords, -1, 1)
+        next_coords = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
         return (coords - next_coords).norm(p=2, dim=-1)
 
     def _compute_route_demands(
