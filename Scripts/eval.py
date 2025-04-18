@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 
 # Constants
 PATH = "wandb/Neural_Simulated_Annealing/"
-FOLDER = "bench_model_temp"
+FOLDER = "init_temp_benchmark"
 RESULTS_FILE = f"res/models_res/res_model_{FOLDER}.csv"
 MODEL_NAMES = glob.glob(os.path.join(PATH, FOLDER, "models", "*"))
 
@@ -81,10 +81,16 @@ def load_model(model, folder):
 
 def initialize_results_df(columns: list):
     """Initialize or load results DataFrame."""
+    new_file = RESULTS_FILE
     if os.path.exists(RESULTS_FILE):
-        print(f"Loading existing results file from {RESULTS_FILE}")
-        return pd.read_csv(RESULTS_FILE)
-    return pd.DataFrame(columns=columns)
+        print(f"Existing results file found at {RESULTS_FILE}, creating a new file.")
+        base, ext = os.path.splitext(RESULTS_FILE)
+        i = 1
+        new_file = f"{base}_{i}{ext}"
+        while os.path.exists(new_file):
+            i += 1
+            new_file = f"{base}_{i}{ext}"
+    return pd.DataFrame(columns=columns), new_file
 
 
 def set_seed(seed=0):
@@ -196,7 +202,7 @@ if __name__ == "__main__":
 
     # Initialize results DataFrame with dynamic columns
     columns = ["model", "initial_cost", "final_cost"] + list(differing_keys)
-    new_df = initialize_results_df(columns)
+    new_df, RESULTS_FILE = initialize_results_df(columns)
 
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
         final_cost = perform_test(model_name, problem, init_x)
