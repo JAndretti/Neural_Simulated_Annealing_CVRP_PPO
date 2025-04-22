@@ -1,13 +1,11 @@
 import pandas as pd
 import torch
 import os
-import numpy as np
-import random
 import warnings
-import yaml
 import glob
-
 import sys
+
+from func import get_HP_for_model, set_seed, load_model
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from problem import CVRP
@@ -20,10 +18,9 @@ warnings.filterwarnings("ignore")
 
 # Constants
 PATH = "wandb/Neural_Simulated_Annealing/"
-FOLDER = "init_temp_benchmark"
+FOLDER = "init_temp_outer_steps_benchmark"
 RESULTS_FILE = f"res/models_res/res_model_{FOLDER}.csv"
 MODEL_NAMES = glob.glob(os.path.join(PATH, FOLDER, "models", "*"))
-
 
 # Configuration
 CFG = {
@@ -36,47 +33,33 @@ CFG = {
     "OUTER_STEPS": 100,
     "SCHEDULER": "lam",  # unused but mandatory, model value will be used
     "HEURISTIC": "mix",  # unused but mandatory, model value will be used
-    "name": None,  # unused but mandatory, model value will be used
+    "name": None,  # unused but mandatory
 }
 
 
-def get_HP_for_model(model_name):
-    """Extract heuristic from HP.yaml file."""
-    hp_file = os.path.join(model_name, "HP.yaml")
-    try:
-        with open(hp_file, "r") as file:
-            content = file.read()
-            content_clean = content.replace("!!python/object:HP._HP", "")
-            hp_data = yaml.unsafe_load(content_clean)
-            if isinstance(hp_data, dict):
-                for key in hp_data.get("config", {}):
-                    if key in CFG and key not in ["SCHEDULER", "HEURISTIC"]:
-                        hp_data["config"][key] = CFG[key]
-                return hp_data.get("config", {})
-            else:
-                return None
-    except Exception as e:
-        print(f"Error for reading HP.yaml file for mdoel : {model_name}: {e}")
-        return None
-
-
-def extract_loss(filename):
-    """Extract loss value from filename."""
-    try:
-        return float((filename.split("_")[-1])[:-3])
-    except ValueError:
-        return float("inf")
-
-
-def load_model(model, folder):
-    """Load model with smallest loss."""
-    files = [f for f in os.listdir(folder) if f.endswith(".pt")]
-    if files:
-        best_file = min(files, key=extract_loss)
-        model.load_state_dict(
-            torch.load(os.path.join(folder, best_file), weights_only=True)
-        )
-    return model
+def init_problem_parameters(model_path: str):
+    HP = get_HP_for_model(model_path)
+    CFG = {
+        "PROBLEM_DIM": HP.get("PROBLEM_DIM", 20),
+        "N_PROBLEMS": 500,
+        "MAX_LOAD": HP.get("MAX_LOAD", 30),
+        "DEVICE": HP.get("DEVICE", "cpu"),
+        "INNER_STEPS": HP.get("INNER_STEPS", 1),
+        "OUTER_STEPS": 1000,
+        "SCHEDULER": HP.get("SCHEDULER", "lam"),
+        "HEURISTIC": HP.get("HEURISTIC", "mix"),
+        "INIT_TEMP": HP.get("INIT_TEMP", 1.0),
+        "STOP_TEMP": HP.get("STOP_TEMP", 0.1),
+        "METHOD": HP.get("METHOD", "ppo"),
+        "REWARD": HP.get("REWARD", "immediate"),
+        "PAIRS": HP.get("PAIRS", False),
+        "EMBEDDING_DIM": HP.get("EMBEDDING_DIM", 32),
+        "NUM_H_LAYERS": HP.get("NUM_H_LAYERS", 1),
+        "GAMMA": HP.get("GAMMA", 0.99),
+        "name": None,  # unused but mandatory
+        "CLUSTERING": False,
+    }
+    return CFG
 
 
 def initialize_results_df(columns: list):
@@ -93,14 +76,8 @@ def initialize_results_df(columns: list):
     return pd.DataFrame(columns=columns), new_file
 
 
-def set_seed(seed=0):
-    """Set random seeds for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
 def init_pb():
+    """Initialize the CVRP problem and generate initial solutions."""
     # Initialize CVRP problem environment
     problem = CVRP(
         CFG["PROBLEM_DIM"],
@@ -130,7 +107,7 @@ def perform_test(
     """Main execution function."""
 
     # init HP
-    HP = get_HP_for_model(model_name)
+    HP = init_problem_parameters(model_name)
 
     # Set heuristic in problem
     problem.set_heuristic(HP["HEURISTIC"])

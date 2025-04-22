@@ -125,8 +125,8 @@ class CVRPActorPairs(SAModel):
             (
                 torch.cat(
                     [
-                        idx1.unsqueeze(-1),
-                        idx2.unsqueeze(-1),
+                        idx1.unsqueeze(-1).repeat_interleave(2, dim=0),
+                        idx2.unsqueeze(-1).repeat_interleave(2, dim=0),
                         heuristic_indices.unsqueeze(-1),
                     ],
                     dim=-1,
@@ -136,7 +136,7 @@ class CVRPActorPairs(SAModel):
             ),
         )
 
-        return log_probs[..., 0], all_action
+        return log_probs, all_action
 
     def baseline_sample(
         self, state: torch.Tensor, **kwargs

@@ -87,8 +87,8 @@ def sa(
     best_solution = current_solution = initial_solution
     best_cost = problem.cost(best_solution)
     initial_cost = best_cost.clone()
-    cumulative_cost = best_cost
-    current_cost = best_cost
+    cumulative_cost = best_cost.clone()
+    current_cost = best_cost.clone()
 
     # Tracking counters and histories
     accepted_moves = 0
@@ -96,9 +96,10 @@ def sa(
     action_distributions = []
     state_history = []
     action_history = []
-    temperature = [current_temp]
+    temperature = [current_temp.clone()]
+    heuristic_choice = []
     acceptance_history = []
-    cost_history = [current_cost]
+    cost_history = [current_cost.clone()]
     reward_signal = None
     ratio = 0.0
 
@@ -128,6 +129,7 @@ def sa(
             if config["HEURISTIC"] == "mix":
                 heuristic_action = sum(action[:, 2])
                 ratio += heuristic_action / len(action[:, 2])
+                heuristic_choice.append(heuristic_action)
 
             # Record action information if needed
             if record_state:
@@ -257,4 +259,5 @@ def sa(
     }
     if config["HEURISTIC"] == "mix":
         dict["ratio"] = ratio / config["OUTER_STEPS"]
+        dict["heuristic"] = heuristic_choice
     return dict
