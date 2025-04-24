@@ -251,20 +251,8 @@ class CVRP(Problem):
         """
         super().__init__(device)
         self.params = params or {}
-        self._setup_heuristic()
+        self.set_heuristic(self.params["HEURISTIC"])
         self._init_problem_parameters(dim, n_problems, capacity)
-
-    def _setup_heuristic(self):
-        """Initialize solution modification heuristic."""
-        heuristic = self.params["HEURISTIC"]
-        if heuristic == "swap":
-            self.heuristic = self.swap
-        elif heuristic == "two_opt":
-            self.heuristic = self.two_opt
-        elif heuristic == "mix":
-            self.heuristic = self.mixed_heuristic
-        else:
-            raise ValueError(f"Unsupported heuristic: {heuristic}")
 
     def set_heuristic(self, heuristic: str) -> None:
         """Set the heuristic for modifying solutions."""
@@ -272,6 +260,8 @@ class CVRP(Problem):
             self.heuristic = self.swap
         elif heuristic == "two_opt":
             self.heuristic = self.two_opt
+        elif heuristic == "insertion":
+            self.heuristic = self.insertion
         elif heuristic == "mix":
             self.heuristic = self.mixed_heuristic
         else:
@@ -450,7 +440,7 @@ class CVRP(Problem):
         """
         # Remove depot visits for processing
         mask = solution.squeeze(-1) != 0
-        compact_sol = torch.stack([s[m] for s, m in zip(solution, mask)])
+        compact_sol = solution[mask].view(solution.size(0), -1, solution.size(-1))
 
         # Apply selected heuristic
         modified_sol = self.heuristic(compact_sol, action).long()
@@ -505,6 +495,56 @@ class CVRP(Problem):
 
         return torch.gather(solution, 1, idx.unsqueeze(-1))
 
+    def insertion(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Vectorized version of the insertion operation.
+
+        solution: Tensor [batch, route_length, 1]
+        indices: Tensor [batch, 2] -> (node_position, new_position)
+        Returns: Tensor [batch, route_length, 1]
+        """
+        batch_size, route_length, _ = solution.shape
+        device = solution.device
+
+        # Remove last dimension and clamp new_pos
+        solution = solution.squeeze(-1)  # Ensure float dtype
+        node_pos = indices[:, 0]
+        new_pos = indices[:, 1].clamp(0, route_length - 1)
+
+        # Create batch indices [0, 1, ..., batch_size-1]
+        batch_idx = torch.arange(batch_size, device=device)
+
+        # Create mask for all elements except the ones to move
+        mask = torch.ones_like(solution, dtype=torch.bool)
+        mask[batch_idx, node_pos] = False
+
+        # Get remaining nodes after removing the moved ones
+        remaining_nodes = solution[mask].view(batch_size, route_length - 1)
+
+        # Create new solution tensor with proper dtype
+        new_solution = torch.zeros(
+            batch_size, route_length, dtype=solution.dtype, device=device
+        )
+
+        # Create position ranges
+        pos_range = torch.arange(route_length, device=device).expand(batch_size, -1)
+
+        # Build the new solution by scattering
+        # For positions before new_pos, take from remaining_nodes
+        new_solution[pos_range < new_pos.unsqueeze(1)] = remaining_nodes[
+            :, : route_length - 1
+        ][pos_range[:, : route_length - 1] < new_pos.unsqueeze(1)]
+
+        # For positions after new_pos, take from remaining_nodes offset by 1
+        new_solution[pos_range > new_pos.unsqueeze(1)] = remaining_nodes[
+            :, : route_length - 1
+        ][pos_range[:, : route_length - 1] >= new_pos.unsqueeze(1)]
+
+        # Insert the moved nodes at their new positions
+        new_solution[batch_idx, new_pos] = solution[batch_idx, node_pos]
+
+        return new_solution.unsqueeze(-1)
+
     def mixed_heuristic(
         self, solution: torch.Tensor, action: torch.Tensor
     ) -> torch.Tensor:
@@ -521,18 +561,18 @@ class CVRP(Problem):
             Modified solution
         """
         indices = action[:, :2]
-        heuristic_choice = action[:, 2] >= 0.5
+        heuristic_choice = action[:, 2] >= 0.5  # Convert to boolean
 
-        # Apply swap where choice < 0.5
-        swap_solution = self.swap(solution, indices)
-        # Apply two_opt where choice >= 0.5
-        two_opt_solution = self.two_opt(solution, indices)
+        # Apply heur_1 where choice < 0.5
+        heur_1 = self.swap(solution, indices)
+        # Apply heur_2 where choice >= 0.5
+        heur_2 = self.insertion(solution, indices)
 
         # Combine results based on heuristic choice
         return torch.where(
             heuristic_choice.unsqueeze(-1).unsqueeze(-1),
-            two_opt_solution,
-            swap_solution,
+            heur_2,
+            heur_1,
         )
 
     @property
