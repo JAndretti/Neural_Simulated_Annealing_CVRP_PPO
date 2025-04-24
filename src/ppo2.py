@@ -5,6 +5,7 @@ from torch.optim import Optimizer
 from model import SAModel
 from replay import ReplayBuffer, Transition
 from problem import CVRP
+from loguru import logger
 
 
 def gradient_penalty(critic, states):
@@ -140,7 +141,7 @@ def ppo(
     batches = [torch.randperm(state.size(0), device=device) for _ in range(ppo_epochs)]
     advantages = advantages.view(n_problems * nt, -1)
     if torch.isnan(advantages).any():
-        print("Warning: NaN detected in advantages")
+        logger.warning("NaN detected in advantages")
     rewards_to_go = rewards_to_go.view(n_problems * nt, -1)
     # 3. PPO Optimization
     for epoch in range(ppo_epochs):
@@ -171,7 +172,7 @@ def ppo(
                 torch.isnan(batch_state_values).any()
                 or torch.isnan(batch_log_probs).any()
             ):
-                print("NaN detected in model outputs. Skipping batch.")
+                logger.warning("NaN detected in model outputs. Skipping batch.")
                 continue
 
             # Critic loss: L^VF = 0.5 * (V_θ(s_t) - R_t)^2
@@ -201,13 +202,13 @@ def ppo(
             entropy = -(torch.exp(batch_log_probs) * batch_log_probs).mean()
 
             if torch.isnan(entropy):
-                print("NaN in entropy calculation - using zero entropy bonus")
+                logger.warning("NaN in entropy calculation - using zero entropy bonus")
                 entropy = torch.zeros_like(entropy)
 
             actor_loss = -torch.min(surr1, surr2).mean() - ent_coef * entropy
 
             if torch.isnan(actor_loss) or torch.isnan(critic_loss):
-                print("NaN detected in loss calculations. Skipping batch.")
+                logger.warning("NaN detected in loss calculations. Skipping batch.")
                 continue
 
             # # Backward pass with gradient clipping
@@ -235,7 +236,7 @@ def ppo(
             )
 
             if actor_grad_nan or critic_grad_nan:
-                print("NaN detected in gradients. Skipping batch.")
+                logger.warning("NaN detected in gradients. Skipping batch.")
                 actor_opt.zero_grad()
                 critic_opt.zero_grad()
                 continue

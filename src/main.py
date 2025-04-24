@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import random
 from tqdm import tqdm
+from loguru import logger
+
 from model import CVRPActor, CVRPActorPairs, CVRPCritic
 from ppo2 import ppo
 from sa import sa
@@ -260,7 +262,9 @@ if __name__ == "__main__":
     # profiler = cProfile.Profile()
     # profiler.enable()
 
-    main(cfg)  # Votre fonction principale
+    logger.info("Training started.")
+    main(cfg)  # Main function call
+    logger.success("Training completed successfully.")
 
     # profiler.disable()
 
