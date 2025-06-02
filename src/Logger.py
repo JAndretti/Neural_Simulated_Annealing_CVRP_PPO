@@ -158,10 +158,13 @@ class WandbLogger:
         Inputs
             - model     (keras.Model): The model to be saved
             - val_loss  (float):       The validation loss of the model
+
+        Returns:
+            - bool: True if a model was saved, False otherwise
         """
         if cls._instance is None:
             logging.warning("No Wandb logging")
-            return None
+            return False, None
         if len(cls._instance.sorted_queue) < cls._instance.num_models_to_keep:
             if model_name is not None:
                 model_name += "_"
@@ -174,8 +177,8 @@ class WandbLogger:
             )
 
             save_func(file_path, model)
-            path = save_HP(cls._instance.model_dir, cls._instance.HP)
-            return path
+            save_HP(cls._instance.model_dir, cls._instance.HP)
+            return True, file_path
 
         else:
             if val_loss < cls._instance.sorted_queue[-1][0]:
@@ -188,5 +191,8 @@ class WandbLogger:
                 except Exception:
                     logging.error("Error : Can't delete file %s", file_suffix_to_delete)
 
-                cls.log_model(save_func, model, val_loss, epoch, model_name)
-        return None
+                saved, path = cls.log_model(
+                    save_func, model, val_loss, epoch, model_name
+                )
+                return saved, path
+            return False, None

@@ -1,17 +1,27 @@
 import yaml
-from rich import print
 import random
 import subprocess
 from itertools import product
 from multiprocessing import Process, Queue
 
 from time import sleep
+from loguru import logger
 
+logger.remove()
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<blue>{file}:{line}</blue> | "
+        "<yellow>{message}</yellow>"
+    ),
+    colorize=True,
+)
 
 # ----------------------------------------------------
 # Global Parameters
 # ----------------------------------------------------
-GPU_AVAILABLES = [0, 1]
+GPU_AVAILABLES = [0]
 
 SWEEP_MODE = "random"  # grid, random
 
@@ -85,7 +95,10 @@ def execute_process(gpu_queue, hyperparameter_names, hyperparameter_queue):
                 hyperparameter_values = (
                     hyperparameter_queue.get()
                 )  # get an hyperparameter configuration to process
-
+                # Log the current hyperparameter configuration
+                logger.info(f"Starting training on GPU {gpu_id}")
+                for name, value in zip(hyperparameter_names, hyperparameter_values):
+                    logger.info(f"  {name}: {value}")
                 try:
                     run_training_script(
                         gpu_id, hyperparameter_names, hyperparameter_values
@@ -114,7 +127,7 @@ if __name__ == "__main__":
     )
 
     # Print the number of configurations to be tested
-    print(f"Number of configurations to be tested: {len(hyperparameter_list)}")
+    logger.info(f"Number of configurations to be tested: {len(hyperparameter_list)}")
 
     # Shuffle the parameter configurations for the random search
     if SWEEP_MODE == "random":

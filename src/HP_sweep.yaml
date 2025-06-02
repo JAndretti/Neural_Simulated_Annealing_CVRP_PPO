@@ -1,17 +1,19 @@
 # =============== Hyperparameter Sweep ===============
-PAIRS: 
-- True
-- False
+LOG: 
+- True 
 
-NUM_H_LAYERS: 
-- 1
-- 2
-- 3
-
-INIT_TEMP:
-- 100
+NEG_REWARD:
+- 0
 - 1
 
-STOP_TEMP: 
-- 0.01
-- 0.1 
+INIT:
+- "sweep"
+- "isolate"
+
+HEURISTIC: 
+- "insertion" 
+- "two_opt"
+
+BATCH_SIZE: 
+- 1024
+- 512

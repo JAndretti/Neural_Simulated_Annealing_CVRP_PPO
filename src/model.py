@@ -11,12 +11,12 @@ def create_network(input_dim, embed_dim, num_hidden_layers, device):
     layers = []
     # Entry layer
     layers.append(nn.Linear(input_dim, embed_dim, bias=True, device=device))
-    layers.append(nn.ReLU())
+    layers.append(nn.LeakyReLU())
 
     # Hidden layers
     for _ in range(num_hidden_layers):
         layers.append(nn.Linear(embed_dim, embed_dim, bias=True, device=device))
-        layers.append(nn.ReLU())
+        layers.append(nn.LeakyReLU())
 
     # Output layer
     layers.append(nn.Linear(embed_dim, 1, bias=False, device=device))
@@ -283,7 +283,7 @@ class CVRPActor(SAModel):
     def __init__(
         self,
         embed_dim: int = 32,
-        c: int = 12,
+        c: int = 13,
         num_hidden_layers: int = 2,
         device: str = "cpu",
         mixed_heuristic: bool = False,
@@ -362,8 +362,8 @@ class CVRPActor(SAModel):
         x = state[:, :, 0]
 
         # Sample c1 at random
-        mask = x.squeeze(-1) != 0
-        x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
+        # mask = x.squeeze(-1) != 0
+        # x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
         logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
@@ -389,7 +389,7 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
-        c1_state, n_problems, mask = self._prepare_features_city1(state)
+        c1_state, n_problems = self._prepare_features_city1(state)
         logits = self.city1_net(c1_state)[..., 0]
         # Mask logits
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
@@ -419,13 +419,13 @@ class CVRPActor(SAModel):
             action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
 
         log_probs = log_probs_c1 + log_probs_c2
-        return action, log_probs[..., 0], mask
+        return action, log_probs[..., 0]
 
     def evaluate(
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Evaluate log probabilities of given actions."""
-        c1_state, n_problems, mask = self._prepare_features_city1(state)
+        c1_state, n_problems = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
         if self.mixed_heuristic:
@@ -465,7 +465,6 @@ class CVRPActor(SAModel):
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * (dim - 3), dim=-1
         )
-
         # Gather coordinate information
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
@@ -480,9 +479,9 @@ class CVRPActor(SAModel):
             + extra_features,
             -1,
         )
-        mask = x.squeeze(-1) != 0
-        c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
-        return c_state, n_problems, mask
+        # mask = x.squeeze(-1) != 0
+        # c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
+        return c_state, n_problems
 
     def _prepare_features_city2(
         self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
@@ -517,7 +516,7 @@ class CVRPCritic(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        c: int = 12,
+        c: int = 13,
         num_hidden_layers: int = 2,
         device: str = "cpu",
     ) -> None:

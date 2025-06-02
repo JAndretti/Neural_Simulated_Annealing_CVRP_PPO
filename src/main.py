@@ -1,29 +1,143 @@
-import torch
-import numpy as np
-import random
-from tqdm import tqdm
-from loguru import logger
+# --------------------------------
+# Import required libraries
+# --------------------------------
+import torch  # PyTorch for deep learning
+import numpy as np  # NumPy for numerical operations
+import random  # For random operations
+from tqdm import tqdm  # Progress bar for iterations
+from loguru import logger  # Enhanced logging capabilities
 
-from model import CVRPActor, CVRPActorPairs, CVRPCritic
-from ppo2 import ppo
-from sa import sa
-from problem import CVRP
-from replay import ReplayBuffer
-from Logger import WandbLogger
-from HP import _HP, get_script_arguments
+# --------------------------------
+# Import custom modules
+# --------------------------------
+from model import (
+    CVRPActor,
+    CVRPActorPairs,
+    CVRPCritic,
+)  # Neural network models
+from ppo2 import ppo  # Proximal Policy Optimization implementation
+from sa import sa  # Simulated Annealing implementation
+from problem import CVRP  # CVRP problem definition
+from replay import ReplayBuffer  # Experience replay for RL
+from Logger import WandbLogger  # Weights & Biases logging
+from HP import _HP, get_script_arguments  # Hyperparameter management
+import os  # Operating system interfaces
+import re  # Regular expressions for file handling
 
-# import cProfile
-# import io
-# import pstats
+# --------------------------------
+# Profiling tools
+# --------------------------------
 
+profiler = False
+if profiler:
+    import cProfile  # For profiling code performance
+    import pstats  # For statistics from profiling
+    import io  # For in-memory stream handling
 
-# Load configuration from YAML and command line arguments
+# --------------------------------
+# Configure logger formatting
+# --------------------------------
+# Remove default logger
+logger.remove()
+# Add custom logger with colored output
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
+        "<blue>{file}:{line}</blue> | "  # File and line in blue
+        "<yellow>{message}</yellow>"  # Message in yellow
+    ),
+    colorize=True,
+)
+
+# --------------------------------
+# Load and prepare configuration
+# --------------------------------
+# Load base configuration from YAML file
 cfg = _HP("src/HP.yaml")
+# Override with command line arguments
 cfg.update(get_script_arguments(cfg.keys()))
 
-# Initialize WandB logging if enabled
+# --------------------------------
+# Initialize experiment tracking
+# --------------------------------
+# Set up Weights & Biases logging if enabled
 if cfg["LOG"]:
+    # Initialize WandB with config
     WandbLogger.init(None, 3, cfg)
+    # Log the model save directory for reference
+    logger.info(f"WandB model save directory: {WandbLogger._instance.model_dir}")
+
+
+def cleanup_temp_models(model_dir, project_name, group_name, keep=3):
+    """
+    Keeps only the specified number of best temperature models (with lowest loss).
+
+    Args:
+        model_dir: Directory containing model files
+        project_name: Project name used in filename
+        group_name: Group name used in filename
+        keep: Number of models to keep (default: 3)
+    """
+
+    # Pattern to match temp model files and extract loss
+    pattern = f"{project_name}_{group_name}_temp_epoch_\\d+_loss_(\\d+\\.\\d+).pt"
+    model_files = []
+
+    # Find all temp model files and extract their loss values
+    for file in os.listdir(model_dir):
+        match = re.match(pattern, file)
+        if match:
+            loss = float(match.group(1))
+            model_files.append((file, loss))
+
+    # Sort models by loss (ascending)
+    model_files.sort(key=lambda x: x[1])
+
+    # Delete excess models, keeping only the best ones
+    if len(model_files) > keep:
+        for file, _ in model_files[keep:]:
+            try:
+                os.remove(os.path.join(model_dir, file))
+                logger.info(f"Removed excess temp model: {file}")
+            except Exception as e:
+                logger.error(f"Failed to remove {file}: {e}")
+
+    return [f for f, _ in model_files[:keep]]
+
+
+def log_training_and_test_metrics(
+    actor_loss, critic_loss, avg_actor_grad, avg_critic_grad, test, epoch, cfg
+):
+    logs = {}
+    if actor_loss is not None:
+        logs = {
+            # Training metrics
+            "Actor_loss": actor_loss,
+            "Critic_loss": critic_loss,
+            "Train_loss": actor_loss + 0.5 * critic_loss,
+            # Gradient monitoring
+            "Avg_actor_grad": avg_actor_grad,
+            "Avg_critic_grad": avg_critic_grad,
+        }
+    if epoch % 10 == 0 and test is not None:
+        # Additional logs every 10 epochs
+        test_logs = {
+            # Cost metrics
+            "Min_cost": torch.mean(test["min_cost"]),
+            # Improvement metrics
+            "N_gain": torch.mean(test["ngain"]),
+            "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
+            # Search statistics
+            "Acceptance_rate": torch.mean(test["n_acc"]),
+            "Rejection_rate": torch.mean(test["n_rej"]),
+            "Step_best_cost": torch.mean(test["best_step"]),
+            "Valid_percentage": torch.mean(test["is_valid"]),
+        }
+        logs.update(test_logs)
+        if cfg["HEURISTIC"] == "mix":
+            logs["ratio_heuristic"] = test["ratio"]
+    WandbLogger.log(logs)
 
 
 def save_model(path: str, actor_model: torch.nn.Module = None) -> None:
@@ -49,6 +163,7 @@ def train_ppo(
     problem: CVRP,
     init_x: torch.Tensor,
     cfg: dict,
+    step: int = 0,
 ) -> tuple:
     """Executes one training cycle of PPO.
 
@@ -69,12 +184,19 @@ def train_ppo(
 
     # Collect experiences through Simulated Annealing
     train_in = sa(
-        actor, problem, init_x, cfg, replay_buffer=replay, baseline=False, greedy=False
+        actor,
+        problem,
+        init_x,
+        cfg,
+        replay_buffer=replay,
+        baseline=False,
+        greedy=False,
+        train=True if step < cfg["N_EPOCHS"] * 0.75 else False,
     )
 
     # Optimize policy with PPO
     actor_loss, critic_loss = ppo(
-        actor, critic, replay, actor_opt, critic_opt, cfg, problem
+        actor, critic, init_x.shape[1], replay, actor_opt, critic_opt, cfg
     )
 
     # Compute gradient statistics for monitoring
@@ -85,7 +207,13 @@ def train_ppo(
         [p.grad.abs().mean().item() for p in critic.parameters() if p.grad is not None]
     )
 
-    return (train_in, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad)
+    return (
+        train_in,
+        actor_loss,
+        critic_loss,
+        avg_actor_grad,
+        avg_critic_grad,
+    )
 
 
 def test_model(
@@ -124,6 +252,8 @@ def main(cfg: dict) -> None:
         cfg["DEVICE"] = "cpu"
         print("MPS device not available. Falling back to CPU.")
 
+    logger.info(f"Using device: {cfg['DEVICE']}")
+
     # Set random seeds for reproducibility
     torch.manual_seed(cfg["SEED"])
     random.seed(cfg["SEED"])
@@ -140,19 +270,25 @@ def main(cfg: dict) -> None:
     problem.manual_seed(cfg["SEED"])
 
     problem_test = CVRP(
-        cfg["PROBLEM_DIM"],
-        cfg["N_PROBLEMS"],
-        cfg["MAX_LOAD"],
+        100,
+        2000,
+        50,
         device=cfg["DEVICE"],
         params=cfg,
     )
     problem_test.manual_seed(0)
     # Generate new problem instances
-    params = problem_test.generate_params(mode="test")
-    params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
-    problem_test.set_params(params)
-    # Get initial solutions
+    path = "pb/problem_data_dim100_load50.pt"
+    problem_test.load_from_pt(path)
     init_x_test = problem_test.generate_init_x()
+    init_cost = torch.mean(problem_test.cost(init_x_test))
+    logger.info(
+        "Test problem initialized with params: "
+        f"PROBLEM_DIM={100}, "
+        f"N_PROBLEMS={2000}, "
+        f"MAX_LOAD={50}, "
+        f"Initial cost: {init_cost.item():.3f}"
+    )
 
     # Initialize models
     if cfg["PAIRS"]:
@@ -164,18 +300,20 @@ def main(cfg: dict) -> None:
         )
     else:
         actor = CVRPActor(
-            cfg["EMBEDDING_DIM"],
+            embed_dim=cfg["EMBEDDING_DIM"],
+            c=cfg["ENTRY"],
             num_hidden_layers=cfg["NUM_H_LAYERS"],
             device=cfg["DEVICE"],
             mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
         )
+    logger.info(f"Actor model initialized: {actor.__class__.__name__}")
     actor.manual_seed(cfg["SEED"])
     critic = CVRPCritic(
-        cfg["EMBEDDING_DIM"],
+        embed_dim=cfg["EMBEDDING_DIM"],
+        c=cfg["ENTRY"],
         num_hidden_layers=cfg["NUM_H_LAYERS"],
         device=cfg["DEVICE"],
     )
-
     # Initialize optimizers
     actor_opt = torch.optim.Adam(
         actor.parameters(), lr=cfg["LR"], weight_decay=cfg["WEIGHT_DECAY"]
@@ -183,8 +321,18 @@ def main(cfg: dict) -> None:
     critic_opt = torch.optim.Adam(
         critic.parameters(), lr=cfg["LR"], weight_decay=cfg["WEIGHT_DECAY"]
     )
-
+    logger.info("Training started.")
     # Training loop
+    test_init = test_model(
+        actor,
+        problem_test,
+        init_x_test,
+        cfg,
+    )
+    train_loss = torch.mean(test_init["min_cost"])
+
+    early_stopping_counter = 0
+    early_stop_value = float("inf")
     with tqdm(range(cfg["N_EPOCHS"])) as progress_bar:
         for epoch in progress_bar:
             # Generate new problem instances
@@ -197,12 +345,22 @@ def main(cfg: dict) -> None:
 
             # Training phase
             train_results = train_ppo(
-                actor, critic, actor_opt, critic_opt, problem, init_x, cfg
+                actor,
+                critic,
+                actor_opt,
+                critic_opt,
+                problem,
+                init_x,
+                cfg,
+                step=epoch,
             )
-            train_in, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad = (
-                train_results
-            )
-
+            (
+                train_in,
+                actor_loss,
+                critic_loss,
+                avg_actor_grad,
+                avg_critic_grad,
+            ) = train_results
             # Test phase every 10 epochs
             if epoch % 10 == 0:
                 test = test_model(
@@ -212,67 +370,72 @@ def main(cfg: dict) -> None:
                     cfg,
                 )
                 train_loss = torch.mean(test["min_cost"])
+                # Inverse clustering flag for next 10 epoch
+                if cfg["ALT_CLUSTERING"]:
+                    problem.clustering = not problem.clustering
 
             # Logging
             if cfg["LOG"]:
-                logs = {
-                    # Training metrics
-                    "Actor_loss": actor_loss,
-                    "Critic_loss": critic_loss,
-                    "Train_loss": actor_loss + 0.5 * critic_loss,
-                    # Gradient monitoring
-                    "Avg_actor_grad": avg_actor_grad,
-                    "Avg_critic_grad": avg_critic_grad,
-                }
-                if epoch % 10 == 0:
-                    # Additional logs every 10 epochs
-                    logs.update(
-                        {
-                            # Cost metrics
-                            "Min_cost": torch.mean(test["min_cost"]),
-                            # Improvement metrics
-                            "N_gain": torch.mean(test["ngain"]),
-                            "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
-                            # Search statistics
-                            "Acceptance_rate": torch.mean(test["n_acc"]),
-                            "Rejection_rate": torch.mean(test["n_rej"]),
-                        }
-                    )
-                    if cfg["HEURISTIC"] == "mix":
-                        logs["ratio_heuristic"] = test["ratio"]
-                WandbLogger.log(logs)
+                log_training_and_test_metrics(
+                    actor_loss,
+                    critic_loss,
+                    avg_actor_grad,
+                    avg_critic_grad,
+                    test if epoch != 0 else test_init,
+                    epoch,
+                    cfg,
+                )
 
             # Update progress bar
             progress_bar.set_description(f"Training loss: {train_loss:.4f}")
 
             # Model checkpointing
             if cfg["LOG"]:
-                model_name = f"{cfg['PROJECT']}_{cfg['GROUP']}"
-                WandbLogger.log_model(
+                model_name = f"{cfg['PROJECT']}_{cfg['GROUP']}_actor"
+                saved, path = WandbLogger.log_model(
                     save_func=save_model,
                     model=actor,
                     val_loss=(train_loss.item()),
                     epoch=epoch,
                     model_name=model_name,
                 )
+            if epoch % 10 == 0:
+                if train_loss.item() >= early_stop_value:
+                    early_stopping_counter += 1
+                else:
+                    early_stopping_counter = 0
+                    early_stop_value = min(train_loss.item(), early_stop_value)
+
+            if early_stopping_counter > 5:
+                logger.warning(
+                    (
+                        f"Early stopping triggered at epoch {epoch} "
+                        f"with loss {early_stop_value:.4f}"
+                    )
+                )
+                break
 
 
 if __name__ == "__main__":
-    # # Lance le profiling et sauvegarde les résultats dans 'profile_results.prof'
-    # profiler = cProfile.Profile()
-    # profiler.enable()
+    if profiler:
+        # Launch profiling and save results to 'profile_results.prof'
 
-    logger.info("Training started.")
-    main(cfg)  # Main function call
-    logger.success("Training completed successfully.")
+        profiler = cProfile.Profile()
+        profiler.enable()
 
-    # profiler.disable()
+        main(cfg)  # Main function call
+        logger.info("Training completed successfully.")
 
-    # # Sauvegarde les résultats
-    # profiler.dump_stats("profile_results.prof")
+        profiler.disable()
 
-    # # Optionnel: Affiche un résumé dans la console
-    # stream = io.StringIO()
-    # stats = pstats.Stats(profiler, stream=stream)
-    # stats.strip_dirs().sort_stats("cumtime").print_stats(20)
-    # print(stream.getvalue())
+        # Save the results
+        profiler.dump_stats("profile_results.prof")
+
+        # Optional: Display a summary in the console
+        stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=stream)
+        stats.strip_dirs().sort_stats("cumtime").print_stats(20)
+        print(stream.getvalue())
+    else:
+        main(cfg)  # Main function call
+        logger.info("Training completed successfully.")

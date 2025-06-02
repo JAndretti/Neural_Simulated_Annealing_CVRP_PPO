@@ -1,8 +1,208 @@
-from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Optional
-import torch
-import torch.nn.functional as F
-from utils import repeat_to
+# --------------------------------
+# Import required libraries
+# --------------------------------
+from abc import ABC, abstractmethod  # Abstract base classes for problem definition
+from typing import Dict, Tuple, Optional  # Type hints for better code readability
+import torch  # PyTorch for tensor operations
+import torch.nn.functional as F  # PyTorch functional API for operations
+from utils import repeat_to  # Utility function for tensor expansion
+from loguru import logger  # Advanced logging utility
+import os  # File system operations
+
+# Padding multiplier for route tensors (60% extra space for depot visits)
+MULT = 0.6
+
+
+def calculate_client_angles(coords: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate polar angles of clients with respect to the depot for each problem.
+
+    The depot is assumed to be at position 0 for each problem in the batch.
+    Angles are calculated in radians in the range [-π, π] using the arctangent function.
+
+    Args:
+        coords: Tensor of shape [batch_size, num_nodes, 2] containing coordinates
+               where coords[:, 0, :] represents depot coordinates
+
+    Returns:
+        Tensor of shape [batch_size, num_nodes-1] containing angles in radians
+        for each client (excluding depot) relative to the depot
+    """
+    batch_size, num_nodes, _ = coords.shape
+    device = coords.device
+
+    # Extract depot coordinates (first node in each problem)
+    depot_coords = coords[:, 0:1, :]  # [batch_size, 1, 2]
+
+    # Extract client coordinates (all nodes except depot)
+    client_coords = coords[:, 1:, :]  # [batch_size, num_nodes-1, 2]
+
+    # Calculate vectors from depot to each client
+    delta_coords = client_coords - depot_coords  # [batch_size, num_nodes-1, 2]
+
+    # Calculate polar angles (in radians) for each client relative to depot
+    # atan2(y, x) gives angle in radians in range [-π, π] and then normalize to [0, 1]
+    angles = (
+        torch.atan2(delta_coords[:, :, 1], delta_coords[:, :, 0]) / (2 * torch.pi) + 0.5
+    ).to(device)
+    # Concatenate a column of zeros at the beginning to represent the depot's angle (0)
+    angles = torch.cat(
+        (torch.zeros(batch_size, 1, device=device), angles), dim=1
+    )  # Shape: [batch_size, num_nodes]
+    return angles.unsqueeze(-1)  # Shape: [batch_size, num_nodes, 1]
+
+
+def generate_isolate_solution(cvrp_instance):
+    """
+    Generate initial CVRP solutions using the Isolate Algorithm.
+
+    This creates a solution where each client is visited individually
+    with depot returns between each visit: [0,1,0,2,0,3,0,4,...,0,N,0]
+
+    Args:
+        cvrp_instance: An instance of the CVRP class containing problem data
+
+    Returns:
+        torch.Tensor: Solution tensor of shape [batch_size, route_length, 1]
+    """
+    batch_size = cvrp_instance.n_problems
+    dim = cvrp_instance.dim  # Number of clients (excluding depot)
+    device = cvrp_instance.device
+
+    # Pattern: [0, 1, 0, 2, ..., 0, N, 0]
+    route_length = 2 * dim + 1  # Start depot, depot after each client, end depot
+
+    # Build pattern for a single batch
+    pattern = torch.zeros(route_length, dtype=torch.long, device=device)
+    pattern[0] = 0  # Start at depot
+    pattern[-1] = 0  # End at depot
+    pattern[1:-1:2] = torch.arange(1, dim + 1, device=device)  # Clients
+    pattern[2:-1:2] = 0  # Depot after each client
+
+    # Repeat for batch
+    routes = pattern.unsqueeze(0).repeat(batch_size, 1)
+    return routes.unsqueeze(-1)
+
+
+def generate_sweep_solution(cvrp_instance):
+    """
+    Generate initial CVRP solutions using the Sweep Algorithm.
+
+    This classical heuristic constructs routes by:
+    1. Sorting clients by polar angle around the depot
+    2. Sweeping through clients in angular order
+    3. Starting new routes when vehicle capacity would be exceeded
+
+    Args:
+        cvrp_instance: An instance of the CVRP class containing problem data
+
+    Returns:
+        torch.Tensor: Solution tensor of shape [batch_size, max_route_length, 1]
+    """
+    # --------------------------------
+    # Extract problem parameters
+    # --------------------------------
+    batch_size = cvrp_instance.n_problems  # Number of problem instances in batch
+    dim = cvrp_instance.dim  # Number of clients (excluding depot)
+    num_total_nodes = dim + 1  # Total nodes including depot
+    device = cvrp_instance.device  # Computation device (CPU/GPU)
+    coords = cvrp_instance.coords  # Node coordinates [batch, nodes, 2]
+    demands = cvrp_instance.demands  # Node demands [batch, nodes]
+    capacity = cvrp_instance.capacity  # Vehicle capacity constraint
+
+    # --------------------------------
+    # Initialize solution tensor
+    # --------------------------------
+    # Add padding for depot returns (60% extra space)
+    max_route_len = num_total_nodes + int(num_total_nodes * MULT)
+    routes = torch.zeros(batch_size, max_route_len, dtype=torch.long, device=device)
+
+    # --------------------------------
+    # Prepare coordinate calculations
+    # --------------------------------
+    # Extract depot coordinates (first node in each problem)
+    depot_coords = coords[:, 0:1, :]  # [batch_size, 1, 2]
+    # Extract client coordinates (all nodes except depot)
+    client_coords = coords[:, 1:, :]  # [batch_size, dim, 2]
+
+    # Calculate vectors from depot to each client
+    delta_coords = client_coords - depot_coords  # [batch_size, dim, 2]
+
+    # Calculate polar angles (in radians) for each client relative to depot
+    # atan2(y, x) gives angle in radians in range [-π, π]
+    angles = torch.atan2(
+        delta_coords[:, :, 1], delta_coords[:, :, 0]
+    )  # [batch_size, dim]
+
+    # --------------------------------
+    # Sort clients by polar angle
+    # --------------------------------
+    # Create client indices (1 to dim) for each problem
+    client_indices = torch.arange(1, dim + 1, device=device)
+    client_indices = client_indices.expand(batch_size, -1)  # [batch_size, dim]
+
+    # Sort clients by their polar angles for each problem
+    sorted_indices = []
+    sorted_demands = []
+
+    for b in range(batch_size):
+        # Get sorted indices for this problem
+        _, indices = torch.sort(angles[b])
+        sorted_indices.append(client_indices[b, indices])
+        # Get corresponding demands
+        sorted_demands.append(demands[b, client_indices[b, indices]])
+
+    # Stack tensors for batch processing
+    sorted_indices = torch.stack(sorted_indices)  # [batch_size, dim]
+    sorted_demands = torch.stack(sorted_demands)  # [batch_size, dim]
+
+    # --------------------------------
+    # Construct routes using sorted clients
+    # --------------------------------
+    # Initialize variables for route construction
+    current_loads = torch.zeros(batch_size, device=device)
+    route_pos = torch.ones(
+        batch_size, dtype=torch.long, device=device
+    )  # Start at pos 1 (after depot)
+
+    # All routes start at depot
+    routes[:, 0] = 0
+
+    # Sweep through sorted clients
+    for i in range(dim):
+        client_ids = sorted_indices[:, i]
+        client_demands = sorted_demands[:, i]
+
+        # Check if adding client would exceed capacity
+        capacity_check = current_loads + client_demands <= capacity
+
+        # For problems where capacity would be exceeded:
+        # 1. Return to depot (already filled with 0s)
+        # 2. Reset current load to 0
+        route_pos = torch.where(capacity_check, route_pos, route_pos + 1)
+        current_loads = torch.where(
+            capacity_check, current_loads + client_demands, client_demands
+        )
+
+        # Add client to route
+        for b in range(batch_size):
+            if route_pos[b] < max_route_len:
+                routes[b, route_pos[b]] = client_ids[b]
+
+        # Move position pointer
+        route_pos += 1
+
+        # Check for route_pos overflow
+        if (route_pos >= max_route_len).any():
+            print("Warning: Some routes may be truncated")
+
+    # Return to depot at the end of each route if not already there
+    for b in range(batch_size):
+        if route_pos[b] < max_route_len and routes[b, route_pos[b] - 1] != 0:
+            routes[b, route_pos[b]] = 0
+
+    # Add final dimension to match expected shape
+    return routes.unsqueeze(-1)
 
 
 def greedy_init_batch(demands: torch.Tensor, capacity: int) -> torch.Tensor:
@@ -21,7 +221,7 @@ def greedy_init_batch(demands: torch.Tensor, capacity: int) -> torch.Tensor:
     device = demands.device
 
     # Initialize solution tensor with 40% padding for depot insertions
-    max_route_length = num_nodes + int(num_nodes * 0.40)
+    max_route_length = num_nodes + int(num_nodes * MULT)
     routes = torch.zeros(batch_size, max_route_length, dtype=torch.long, device=device)
 
     # Prepare client indices (excluding depot 0)
@@ -111,7 +311,7 @@ def construct_cvrp_solution(
     device = x.device
 
     # Initialize solution with padding for depot insertions
-    max_route_length = num_nodes + int(num_nodes * 0.40)
+    max_route_length = num_nodes + int(num_nodes * MULT)
     routes = torch.zeros(batch_size, max_route_length, dtype=torch.long, device=device)
 
     # Add depot at start of each route
@@ -192,35 +392,35 @@ class Problem(ABC):
         pass
 
     def to_state(
-        self, x: torch.Tensor, temp: torch.Tensor, time: torch.Tensor
+        self,
+        *components: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Construct full state representation by combining:
-        - Current solution (x)
-        - Problem features (state_encoding)
-        - Demand percentages
-        - Route costs
-        - Temperature and time parameters
+        Concatenates multiple state components into a single state tensor.
+
+        Args:
+            *components (torch.Tensor): Variable number of tensors representing
+            different components of the state. Each tensor should have the same shape
+            except for the last dimension, which will be concatenated.
+
+        Returns:
+            torch.Tensor: A single tensor resulting from concatenating all input
+            components along  the last dimension.
+
+
+        Note:
+            The input tensors are expected to be the output of the
+            `build_state_components` function, which returns a tuple of tensors
+            representing different aspects of the problem state.
         """
-        padding = max(0, x.size(1) - self.state_encoding.size(1))
-        padded_features = F.pad(self.state_encoding, (0, 0, 0, padding))
 
-        components = [
-            x,
-            padded_features,
-            *self.get_percentage_demands(x),
-            self.cost_per_route(x),
-            repeat_to(temp, x),
-            repeat_to(time, x),
-        ]
-
-        return torch.cat(components, -1)
+        return torch.cat(components, dim=-1)
 
     def from_state(self, state: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         """Split state into components dynamically."""
         num_extra_features = state.shape[-1] - 3  # Adjusting for variable dimensions
         split_sizes = [1, 2] + [1] * num_extra_features
-        return tuple(torch.split(state, split_sizes, dim=-1))
+        return tuple(torch.split(state, split_sizes, dim=-1))  # TODO Verify function
 
 
 class CVRP(Problem):
@@ -251,10 +451,12 @@ class CVRP(Problem):
         """
         super().__init__(device)
         self.params = params or {}
-        self.set_heuristic(self.params["HEURISTIC"])
+        self.set_heuristic(
+            self.params["HEURISTIC"], self.params["MIX1"], self.params["MIX2"]
+        )
         self._init_problem_parameters(dim, n_problems, capacity)
 
-    def set_heuristic(self, heuristic: str) -> None:
+    def set_heuristic(self, heuristic: str, mix1: str, mix2: str) -> None:
         """Set the heuristic for modifying solutions."""
         if heuristic == "swap":
             self.heuristic = self.swap
@@ -264,6 +466,15 @@ class CVRP(Problem):
             self.heuristic = self.insertion
         elif heuristic == "mix":
             self.heuristic = self.mixed_heuristic
+            heuristics = {
+                "swap": self.swap,
+                "two_opt": self.two_opt,
+                "insertion": self.insertion,
+            }
+            self.heuristic_1 = heuristics.get(mix1)
+            self.heuristic_2 = heuristics.get(mix2)
+            if self.heuristic_1 is None or self.heuristic_2 is None:
+                raise ValueError(f"Unsupported mix heuristics: {mix1}, {mix2}")
         else:
             raise ValueError(f"Unsupported heuristic: {heuristic}")
 
@@ -282,15 +493,34 @@ class CVRP(Problem):
             self.n_problems = n_problems
             self.capacity = capacity
             self.clustering = self.params["CLUSTERING"]
-            if self.clustering:
-                self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
+            self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
 
     def set_params(self, params: Dict) -> None:
         """Update problem coordinates and demands."""
         if "coords" in params:
-            self.coords = params["coords"]
+            self.coords = params["coords"].to(self.device)
         if "demands" in params:
-            self.demands = params["demands"]
+            self.demands = params["demands"].to(self.device)
+        self.angles = calculate_client_angles(self.coords)
+
+    def load_from_pt(self, file_path: str):
+        """
+        Load a .pt file and initialize coords, demands, and init_x if present.
+
+        Args:
+            file_path (str): Path to the .pt file
+
+        Returns:
+            dict: Loaded data dictionary
+        """
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        data = torch.load(file_path)
+        self.set_params(data)
+        self.n_problems = data["coords"].shape[0]
+        return data.get("init_x", None)
 
     def generate_params(
         self, mode: str = "train", pb: bool = False
@@ -388,6 +618,25 @@ class CVRP(Problem):
         demands[:, 0] = 0  # Depot has no demand
         return demands
 
+    def build_state_components(self, x, temp, time):
+        """
+        Build state components for the model.
+        """
+        padding = max(0, x.size(1) - self.state_encoding.size(1))
+        padded_coords = F.pad(self.state_encoding, (0, 0, 0, padding))
+        is_depot = (x == 0).long()  # Identify depot visits
+        # Ensure padded_coords and padded_angles have the same shape
+        return [
+            x,
+            padded_coords,
+            is_depot,
+            self.angles.gather(1, x),
+            *self.get_percentage_demands(x),
+            self.cost_per_route(x),
+            repeat_to(temp, x),
+            repeat_to(time, x),
+        ]
+
     def cost(self, solution: torch.Tensor) -> torch.Tensor:
         """
         Compute total route length for given solution.
@@ -438,15 +687,20 @@ class CVRP(Problem):
         Returns:
             New solution after applying heuristic
         """
-        # Remove depot visits for processing
-        mask = solution.squeeze(-1) != 0
-        compact_sol = solution[mask].view(solution.size(0), -1, solution.size(-1))
+        # # Remove depot visits for processing
+        # mask = solution.squeeze(-1) != 0
+        # compact_sol = solution[mask].view(solution.size(0), -1, solution.size(-1))
 
-        # Apply selected heuristic
-        modified_sol = self.heuristic(compact_sol, action).long()
-
+        # # Apply selected heuristic
+        # modified_sol = self.heuristic(compact_sol, action).long()
+        modified_sol = self.heuristic(solution, action).long()
         # Rebuild valid CVRP solution with depot visits
-        return construct_cvrp_solution(modified_sol, self.demands, self.capacity)
+        # sol = construct_cvrp_solution(modified_sol, self.demands, self.capacity)
+        valid = self.is_feasible(modified_sol).unsqueeze(-1).long()
+        sol = torch.where(valid.unsqueeze(-1) == 1, modified_sol, solution).to(
+            torch.int64
+        )
+        return sol, valid
 
     def swap(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -562,11 +816,10 @@ class CVRP(Problem):
         """
         indices = action[:, :2]
         heuristic_choice = action[:, 2] >= 0.5  # Convert to boolean
-
         # Apply heur_1 where choice < 0.5
-        heur_1 = self.swap(solution, indices)
+        heur_1 = self.heuristic_1(solution, indices)
         # Apply heur_2 where choice >= 0.5
-        heur_2 = self.insertion(solution, indices)
+        heur_2 = self.heuristic_2(solution, indices)
 
         # Combine results based on heuristic choice
         return torch.where(
@@ -590,9 +843,16 @@ class CVRP(Problem):
         """Get demands in solution order."""
         return torch.gather(self.demands, 1, solution.squeeze(-1))
 
-    def generate_init_x(self) -> torch.Tensor:
-        """Generate initial solutions using greedy algorithm."""
-        return greedy_init_batch(self.demands, self.capacity).to(self.device)
+    def generate_init_x(self, param: str = None) -> torch.Tensor:
+        """Generate initial solutions using specified algorithm."""
+        if param is not None:
+            self.params["INIT"] = param
+        if self.params["INIT"] == "greedy":
+            return greedy_init_batch(self.demands, self.capacity).to(self.device)
+        elif self.params["INIT"] == "sweep":
+            return generate_sweep_solution(self).to(self.device)
+        elif self.params["INIT"] == "isolate":
+            return generate_isolate_solution(self).to(self.device)
 
     def generate_init_state(self) -> torch.Tensor:
         """Generate initial state including coordinates."""
@@ -651,60 +911,49 @@ class CVRP(Problem):
             node_cap_pct.unsqueeze(-1),
         )
 
-    # def allowed_permutations(self, x: torch.Tensor, node: torch.Tensor)
-    # -> torch.Tensor:
-    #     """Return all allowed permutations from a node."""
-    #     # Create a mask for the conditions
-    #     mask1 = (
-    #         (self.dem > 0)
-    #         # & (
-    #         #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-    #         #     != node
-    #         # )
-    #         & (self.grp == self.grp.gather(1, node))
-    #     )
-    #     mask2 = (
-    #         (self.dem > 0)
-    #         # & (
-    #         #     torch.arange(dem.shape[1]).repeat(dem.shape[0], 1).to(self.device)
-    #         #     != node
-    #         # )
-    #         & (self.agg + self.dem.gather(1, node) - self.dem - self.capacity <= 0)
-    #         & (
-    #             self.agg.gather(1, node)
-    #             + self.dem
-    #             - self.dem.gather(1, node)
-    #             - self.capacity
-    #             <= 0
-    #         )
-    #     )
+    def is_feasible(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Vectorized check if the solution respects capacity constraints for all routes.
 
-    #     # Combine the masks
-    #     return mask1 | mask2
+        Args:
+            solution: Tensor [batch, route_length, 1] representing routes
 
-    # def get_permutable_pairs(self, x: torch.Tensor, indices: Tuple) -> torch.Tensor:
-    #     """
-    #     Returns a boolean tensor indicating which pairs of nodes are swappable.
+        Returns:
+            Tensor [batch] of boolean values indicating feasibility for each problem
+        """
+        batch_size = solution.size(0)
+        device = solution.device
 
-    #     Args:
-    #         x (torch.Tensor): Tensor representing the solutions of the current
-    #   problems.
+        demands = self.get_demands(solution)  # [batch, route_length]
+        mask = solution.squeeze(-1) != 0  # [batch, route_length]
 
-    #     Returns:
-    #         torch.Tensor: A boolean tensor of size (B, N, N) where
-    #         True indicates that (i, j) is swappable.
-    #     """
-    #     dem_i = self.dem.gather(1, indices[0].unsqueeze(0))
-    #     dem_j = self.dem.gather(1, indices[1].unsqueeze(0))
-    #     grp_i = self.grp.gather(1, indices[0].unsqueeze(0))
-    #     grp_j = self.grp.gather(1, indices[1].unsqueeze(0))
+        # Identify route starts: True where a route starts (depot->client)
+        route_starts = torch.cat(
+            [
+                torch.ones(batch_size, 1, dtype=torch.bool, device=device),
+                (~mask[:, :-1]) & mask[:, 1:],
+            ],
+            dim=1,
+        )  # [batch, route_length]
 
-    #     # Calcul vectorisé
-    #     valid_demand = (dem_i > 0) & (dem_j > 0)
-    #     same_group = grp_i == grp_j
-    #     valid_capacity = ((self.agg + dem_j - dem_i) <= self.capacity) & (
-    #         (self.agg.gather(1, indices[1].unsqueeze(0)) + dem_i - dem_j)
-    #         <= self.capacity
-    #     )
+        # Assign a route id to each position
+        route_ids = torch.cumsum(route_starts, dim=1) - 1  # [batch, route_length]
 
-    #     return valid_demand & (same_group | valid_capacity)
+        # Set depot positions to -1 so they don't contribute to route sums
+        valid_route_ids = route_ids.clone()
+        valid_route_ids[~mask] = -1  # depot positions
+
+        # Compute route demand sums (scatter_add)
+        max_routes = route_ids.max().item() + 1 if route_ids.numel() > 0 else 0
+        max_routes = max(max_routes, solution.size(1))  # ensure enough space
+        route_demands = torch.zeros(
+            batch_size, max_routes, dtype=torch.int64, device=device
+        )
+
+        route_demands.scatter_add_(
+            1, torch.clamp(valid_route_ids, min=0), demands * mask
+        )
+
+        # Check if any route demand exceeds capacity
+        feasible = (route_demands <= self.capacity).all(dim=1)
+        return feasible

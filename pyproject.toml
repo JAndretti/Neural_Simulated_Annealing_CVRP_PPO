@@ -17,6 +17,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "snakeviz>=2.2.2",
     "torch>=2.6.0",
+    "torch-geometric>=2.6.1",
     "tqdm>=4.67.1",
     "vrplib>=1.5.1",
     "wandb>=0.19.9",

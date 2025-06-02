@@ -11,6 +11,7 @@ from problem import CVRP
 
 from HP import _HP, get_script_arguments
 from tqdm import tqdm
+import multiprocessing
 
 
 # Function to calculate Euclidean distance between two points
@@ -48,17 +49,8 @@ def create_data_model(coord, demand, max_load):
     # Locations in block units
     data["locations"] = coord
     data["demands"] = demand
-    data["num_vehicles"] = 8
-    data["vehicle_capacities"] = [
-        max_load,
-        max_load,
-        max_load,
-        max_load,
-        max_load,
-        max_load,
-        max_load,
-        max_load,
-    ]
+    data["num_vehicles"] = 50
+    data["vehicle_capacities"] = [max_load for _ in range(data["num_vehicles"])]
     data["depot"] = 0
     return data
 
@@ -165,25 +157,40 @@ def solve_w_ortools(coord, distance_matrix, demand, or_tools_time, max_load, dim
     return None, None
 
 
+def solve_instance(args):
+    """Helper function to solve a single instance, for parallel processing."""
+    coord_tuple, demand_tensor, cfg_or_tools_time, cfg_max_load, cfg_or_dim = args
+    coord_list = [tuple(row) for row in coord_tuple.tolist()]
+    dist_matrix = compute_euclidean_distance_matrix(coord_list)
+    solution, distance = solve_w_ortools(
+        coord_list,
+        dist_matrix,
+        demand_tensor.tolist(),
+        cfg_or_tools_time,
+        cfg_max_load,
+        cfg_or_dim,
+    )
+    return solution, distance
+
+
 def or_tools(params, cfg):
-    solutions = []
-    distances = []
-    for coord, demand in tqdm(
-        zip(params["coords"], params["demands"]), total=len(params["coords"])
-    ):
-        coord = [tuple(row) for row in coord.tolist()]
-        dist_matrix = compute_euclidean_distance_matrix(coord)
-        solution, distance = solve_w_ortools(
-            coord,
-            dist_matrix,
-            demand.tolist(),
-            cfg["OR_TOOLS_TIME"],
-            cfg["MAX_LOAD"],
-            cfg["OR_DIM"],
+    num_cores = 20  # As specified by the user
+
+    # Prepare arguments for each call to solve_instance
+    args_list = [
+        (coord, demand, cfg["OR_TOOLS_TIME"], cfg["MAX_LOAD"], cfg["OR_DIM"])
+        for coord, demand in zip(params["coords"], params["demands"])
+    ]
+
+    with multiprocessing.Pool(processes=num_cores) as pool:
+        results = list(
+            tqdm(pool.imap(solve_instance, args_list), total=len(params["coords"]))
         )
-        solutions.append(solution)
-        distances.append(distance)
-    return solutions, distances
+
+    # Unzip results
+    solutions, distances = zip(*results)
+
+    return list(solutions), list(distances)
 
 
 def main():

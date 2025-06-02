@@ -7,6 +7,31 @@ from utils import extend_to
 from scheduler import Scheduler
 
 
+def metropolis_accept(
+    cost_improvement: torch.Tensor, current_temp: torch.Tensor, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Applies the Metropolis acceptance criterion.
+
+    Args:
+        cost_improvement: The difference between the current cost and the proposed cost.
+        current_temp: The current temperature.
+        device: The device to perform the calculations on.
+
+    Returns:
+        A tuple containing:
+        - is_accepted: A Long tensor indicating acceptance (1) or rejection (0).
+        - actual_improvement: The cost improvement achieved,
+          considering only the accepted moves.
+    """
+    # Metropolis acceptance criterion
+    acceptance_prob = p_accept(cost_improvement, current_temp)
+    random_sample = torch.rand(acceptance_prob.shape, device=device)
+    is_accepted = (random_sample < acceptance_prob).long()
+    actual_improvement = cost_improvement * is_accepted
+    return is_accepted, actual_improvement
+
+
 def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
     """
     Compute the Metropolis acceptance probability for a proposed move.
@@ -21,6 +46,36 @@ def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
     return torch.minimum(torch.exp(gain / temp), torch.ones_like(gain))
 
 
+def scale_between(value: float, min_value: float, max_value: float) -> float:
+    """
+    Scale a value in [0, 1] to the range [min_value, max_value].
+
+    Args:
+        value: Input value in [0, 1]
+        min_value: Minimum of target range
+        max_value: Maximum of target range
+
+    Returns:
+        Scaled value in [min_value, max_value]
+    """
+    return min_value + (max_value - min_value) * value
+
+
+def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
+    """
+    Scale a value in [min_value, max_value] to the range [0, 1].
+
+    Args:
+        value: Input value in [min_value, max_value]
+        min_value: Minimum of original range
+        max_value: Maximum of original range
+
+    Returns:
+        Scaled value in [0, 1]
+    """
+    return (value - min_value) / (max_value - min_value)
+
+
 def sa(
     actor: SAModel,
     problem: Problem,
@@ -31,6 +86,7 @@ def sa(
     greedy: bool = False,
     record_state: bool = False,
     replay_buffer: ReplayBuffer = None,
+    train: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Perform Simulated Annealing optimization for combinatorial problems.
@@ -71,10 +127,6 @@ def sa(
     """
     device = initial_solution.device
 
-    # Initialize temperature parameters
-    current_temp = torch.tensor([config["INIT_TEMP"]], device=device)
-    next_temp = current_temp
-
     # Set up cooling schedule
     scheduler = Scheduler(
         config["SCHEDULER"],
@@ -90,25 +142,60 @@ def sa(
     cumulative_cost = best_cost.clone()
     current_cost = best_cost.clone()
 
-    # Tracking counters and histories
-    accepted_moves = 0
-    rejected_moves = 0
-    action_distributions = []
-    state_history = []
-    action_history = []
-    temperature = [current_temp.clone()]
-    heuristic_choice = []
-    acceptance_history = []
-    cost_history = [current_cost.clone()]
-    reward_signal = None
-    ratio = 0.0
+    # --------------------------------
+    # Track optimization progress
+    # --------------------------------
+    # Record the step at which the best cost is found for each instance in the batch
+    best_cost_step = torch.zeros_like(best_cost, dtype=torch.long)
 
-    # Convert initial solution to state representation
-    current_state = problem.to_state(
+    # --------------------------------
+    # Set initial temperature
+    # --------------------------------
+
+    # Use default initial temperature (will be scaled below)
+    current_temp = torch.tensor([1], device=device).repeat(best_cost.shape[0])
+
+    # Scale temperature to the configured range [STOP_TEMP, INIT_TEMP]
+    current_temp = scale_between(current_temp, config["STOP_TEMP"], config["INIT_TEMP"])
+    next_temp = current_temp.clone()  # Initialize next_temp for first iteration
+
+    # --------------------------------
+    # Initialize tracking variables
+    # --------------------------------
+    # Move statistics
+    accepted_moves = 0  # Count of accepted moves
+    rejected_moves = 0  # Count of rejected moves
+
+    # History containers for analysis and visualization
+    action_distributions = []  # Store policy distributions
+    state_history = []  # Store states visited during optimization
+    action_history = []  # Store actions taken
+    is_valid_history = []  # Track validity of actions if needed
+    temperature = [current_temp.clone()]  # Store temperature schedule
+    heuristic_choice = []  # Track heuristic choices if using mixed approach
+    acceptance_history = []  # Track which moves were accepted
+    cost_history = [current_cost.clone()]  # Track cost evolution
+    reward_signal = None  # Will store rewards for RL training
+    ratio = 0.0  # Track ratio of heuristic actions if using mixed approach
+
+    # --------------------------------
+    # Prepare initial state representation
+    # --------------------------------
+    # Convert the initial solution to the state representation expected by the policy
+    # Normalize temperature to [0,1] for the state representation
+    normalized_temp = scale_to_unit(
+        current_temp, config["STOP_TEMP"], config["INIT_TEMP"]
+    )
+
+    # Create state components using problem-specific function
+    # This typically includes solution encoding, temperature, and progress information
+    components = problem.build_state_components(
         current_solution,
-        current_temp,
-        torch.tensor(1 - (1 / config["OUTER_STEPS"]), device=device),
-    ).to(device)
+        normalized_temp,
+        torch.tensor((1), device=device),  # Initial progress (full time remaining)
+    )
+
+    current_state = problem.to_state(*components).to(device)
 
     # Main optimization loop over temperature steps
     for step in range(config["OUTER_STEPS"]):
@@ -123,7 +210,7 @@ def sa(
                     current_state, random_std=random_std, problem=problem
                 )
             else:
-                action, action_log_prob, validity_mask = actor.sample(
+                action, action_log_prob = actor.sample(
                     current_state, greedy=greedy, problem=problem
                 )
             if config["HEURISTIC"] == "mix":
@@ -140,18 +227,21 @@ def sa(
 
             # Generate proposed solution
             solution_components, *_ = problem.from_state(current_state)
-            proposed_solution = problem.update(solution_components, action)
+            proposed_solution, is_valid = problem.update(solution_components, action)
             proposed_cost = problem.cost(proposed_solution)
 
+            # Metrics is valid
+            is_valid_history.append(((is_valid == 1).sum() / is_valid.shape[0]).item())
             # Calculate improvement
             cost_improvement = current_cost - proposed_cost
 
-            # Metropolis acceptance criterion
-            acceptance_prob = p_accept(cost_improvement, current_temp)
-            random_sample = torch.rand(acceptance_prob.shape, device=device)
-            is_accepted = (random_sample < acceptance_prob).long()
-            actual_improvement = cost_improvement * is_accepted
-
+            if config["METROPOLIS"]:
+                is_accepted, actual_improvement = metropolis_accept(
+                    cost_improvement, current_temp, device
+                )
+            else:
+                is_accepted = torch.ones_like(cost_improvement)
+                actual_improvement = cost_improvement
             # Update counters
             accepted_moves += is_accepted
             rejected_moves += 1 - is_accepted
@@ -179,39 +269,40 @@ def sa(
                 is_improvement_expanded * current_solution
                 + (1 - is_improvement_expanded) * best_solution
             )
+            best_cost_step = torch.max(is_improvement * (step + 1), best_cost_step)
             best_cost = torch.minimum(current_cost, best_cost)
             cumulative_cost += best_cost
 
             # Temperature update at end of inner steps
             if inner_step == config["INNER_STEPS"] - 1:
-                next_temp = scheduler.step(step).to(device)
+                # Calculate advancement ratio (decreases from 1 to 0)
+                adv = torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device)
+                # Use predefined cooling schedule
+                next_temp = scheduler.step(step).to(device).repeat(best_cost.shape[0])
+                temperature.append(next_temp.detach())
 
-                # # Adaptive cooling schedule adjustment
-                # if (
-                #     max(10, config["OUTER_STEPS"] * 0.1)
-                #     == config["OUTER_STEPS"] - step + 1
-                # ):
-                #     scheduler = Scheduler(
-                #         "lam",
-                #         T_max=1.0,
-                #         T_min=0.01,
-                #         step_max=config["OUTER_STEPS"] - step + 1,
-                #     )
-                #     next_temp = torch.tensor([1], device=device)
-                temperature.append(next_temp)
-                model_next_temp = next_temp / config["INIT_TEMP"]
+                # Normalize temperature for state representation
+                model_next_temp = scale_to_unit(
+                    next_temp, config["STOP_TEMP"], config["INIT_TEMP"]
+                )
 
-            # Prepare next state
-            next_state = problem.to_state(
-                current_solution,
-                model_next_temp,
-                torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device),
-            )
+                # Build next state for the algorithm
+                next_state = problem.to_state(
+                    *problem.build_state_components(
+                        current_solution, model_next_temp, adv
+                    )
+                ).to(device)
 
             # Reward calculation for reinforcement learning
             if config["METHOD"] == "ppo":
                 if config["REWARD"] == "immediate":
                     reward_signal = actual_improvement.unsqueeze(1)
+                    if config["NEG_REWARD"] != 0:
+                        # Apply negative reward for invalid actions
+                        reward_signal = (
+                            reward_signal * is_valid
+                            + (1 - is_valid) * -config["NEG_REWARD"]
+                        )
                 elif config["REWARD"] == "min_cost":
                     reward_signal = -best_cost.view(-1, 1)
                 elif config["REWARD"] == "primal":
@@ -225,13 +316,12 @@ def sa(
                     next_state,
                     reward_signal,
                     action_log_prob,
-                    validity_mask,
                     config["GAMMA"],
                 )
 
         # Update state and temperature for next iteration
         current_state = next_state.clone()
-        current_temp = next_temp
+        current_temp = next_temp.clone()
 
     # Finalize results
     negative_improvement = -(initial_cost - current_cost)
@@ -249,6 +339,7 @@ def sa(
         "n_acc": accepted_moves.float(),
         "n_rej": rejected_moves.float(),
         "distributions": action_distributions,
+        "is_valid": torch.tensor(is_valid_history),
         "states": state_history,
         "actions": action_history,
         "acceptance": acceptance_history,
@@ -256,6 +347,7 @@ def sa(
         "init_cost": initial_cost,
         "reward": reward_signal,
         "temperature": temperature,
+        "best_step": best_cost_step.float(),
     }
     if config["HEURISTIC"] == "mix":
         dict["ratio"] = ratio / config["OUTER_STEPS"]

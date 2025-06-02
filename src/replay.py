@@ -5,7 +5,14 @@ import torch
 
 Transition = namedtuple(
     "Transition",
-    ("state", "action", "next_state", "reward", "old_log_probs", "mask", "gamma"),
+    (
+        "state",
+        "action",
+        "next_state",
+        "reward",
+        "old_log_probs",
+        "gamma",
+    ),
 )
 
 
@@ -38,7 +45,6 @@ class ReplayBuffer:
         next_state: torch.Tensor,
         reward: torch.Tensor,
         old_log_probs: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
         gamma: float = 0.99,
     ) -> None:
         """
@@ -47,6 +53,7 @@ class ReplayBuffer:
         Args:
             state: Current state tensor
             action: Action tensor
+            temp_features: Temperature features tensor
             next_state: Next state tensor
             reward: Reward tensor (shape: [batch_size, 1])
             old_log_probs: Log probabilities of actions
@@ -60,7 +67,6 @@ class ReplayBuffer:
             next_state.detach().clone().to(self.device),
             reward.detach().clone().to(self.device),
             old_log_probs.detach().clone().to(self.device),
-            mask.detach().clone().to(self.device) if mask is not None else None,
             gamma,
         )
         self.memory.append(transition)
