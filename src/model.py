@@ -287,10 +287,12 @@ class CVRPActor(SAModel):
         num_hidden_layers: int = 2,
         device: str = "cpu",
         mixed_heuristic: bool = False,
+        method: str = "free",
     ) -> None:
         super().__init__(device)
         self.mixed_heuristic = mixed_heuristic
         self.c1_state_dim = c
+        self.method = method
 
         # Mean and std computation
         self.city1_net = create_network(
@@ -335,7 +337,7 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute logits and log probabilities for given state and action."""
-        c1_state, n_problems, mask = self._prepare_features_city1(state)
+        c1_state, n_problems = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
 
@@ -362,8 +364,9 @@ class CVRPActor(SAModel):
         x = state[:, :, 0]
 
         # Sample c1 at random
-        # mask = x.squeeze(-1) != 0
-        # x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
+        if self.method == "rm_depot":
+            mask = x.squeeze(-1) != 0
+            x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
         logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
@@ -479,8 +482,9 @@ class CVRPActor(SAModel):
             + extra_features,
             -1,
         )
-        # mask = x.squeeze(-1) != 0
-        # c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
+        if self.method == "rm_depot":
+            mask = x.squeeze(-1) != 0
+            c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
         return c_state, n_problems
 
     def _prepare_features_city2(

@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 import os
 import warnings
-import glob
+import glob2
 import sys
 import time  # Add import for time measurement
 
@@ -19,9 +19,10 @@ warnings.filterwarnings("ignore")
 
 # Constants
 PATH = "wandb/Neural_Simulated_Annealing/"
-FOLDER = "invalid_step_swap"
-RESULTS_FILE = f"res/models_res/res_model_{FOLDER}.csv"
-MODEL_NAMES = glob.glob(os.path.join(PATH, FOLDER, "models", "*"))
+FOLDER = "res_model_Capacity_reward_swap"
+RESULTS_FILE_ALL_MODEL = "res/models_res/res_all_model.csv"
+RESULTS_FILE = PATH + FOLDER + "/res_model.csv"
+MODEL_NAMES = glob2.glob(os.path.join(PATH, FOLDER, "models", "*"))
 
 # Configuration
 CFG = {
@@ -52,7 +53,8 @@ def init_problem_parameters(model_path: str):
         "INNER_STEPS": HP.get("INNER_STEPS", 1),
         "OUTER_STEPS": 4000,
         "SCHEDULER": HP.get("SCHEDULER", "lam"),
-        "INIT": HP.get("INIT", "greedy"),
+        # "INIT": HP.get("INIT", "sweep"),
+        "INIT": "sweep",
         "HEURISTIC": HP.get("HEURISTIC", "mix"),
         "MIX1": HP.get("MIX1", "swap"),
         "MIX2": HP.get("MIX2", "insertion"),
@@ -69,6 +71,9 @@ def init_problem_parameters(model_path: str):
         "CLUSTERING": False,
         "METROPOLIS": HP.get("METROPOLIS", True),
         "NEG_REWARD": HP.get("NEG_REWARD", 0.0),
+        "CAPACITY_REWARD": HP.get("CAPACITY_REWARD", False),
+        "NORMALIZE_REWARD": HP.get("NORMALIZE_REWARD", False),
+        "CAPACITY_REWARD_FACTOR": HP.get("CAPACITY_REWARD_FACTOR", 1.0),
     }
     return CFG
 
@@ -85,6 +90,22 @@ def initialize_results_df(columns: list):
             i += 1
             new_file = f"{base}_{i}{ext}"
     return pd.DataFrame(columns=columns), new_file
+
+
+def load_results_models():
+    """Load results from all models into a DataFrame."""
+    if os.path.exists(RESULTS_FILE_ALL_MODEL):
+        df = pd.read_csv(RESULTS_FILE_ALL_MODEL)
+        print(f"Loaded existing results from {RESULTS_FILE_ALL_MODEL}")
+    else:
+        df = pd.DataFrame(
+            columns=[
+                "model",
+                "final_cost",
+            ]
+        )
+        print(f"Created new DataFrame for results at {RESULTS_FILE_ALL_MODEL}")
+    return df
 
 
 def init_pb():
@@ -139,7 +160,7 @@ def perform_test(
 
     # Run simulated annealing with time measurement
     start_time = time.time()
-    # init_x = problem.generate_init_x(HP["INIT"])
+    init_x = problem.generate_init_x(HP["INIT"])
     test = sa(
         actor,
         problem,
@@ -152,7 +173,17 @@ def perform_test(
     execution_time = time.time() - start_time
     init_cost = torch.mean(problem.cost(init_x))
     final_cost = torch.mean(test["min_cost"])
-    return init_cost, final_cost, execution_time
+    test_baseline = sa(
+        actor,
+        problem,
+        init_x,
+        HP,
+        replay_buffer=None,
+        baseline=True,
+        greedy=False,
+    )
+    final_cost_baseline = torch.mean(test_baseline["min_cost"])
+    return init_cost, final_cost, final_cost_baseline, execution_time
 
 
 def extract_differing_keys(model_names):
@@ -189,13 +220,18 @@ if __name__ == "__main__":
     differing_keys = extract_differing_keys(MODEL_NAMES)
 
     # Initialize results DataFrame with dynamic columns
-    columns = ["model", "initial_cost", "final_cost", "execution_time"] + list(
-        differing_keys
-    )
+    columns = [
+        "model",
+        "initial_cost",
+        "final_cost",
+        "final_cost_baseline",
+        "execution_time",
+    ] + list(differing_keys)
     new_df, RESULTS_FILE = initialize_results_df(columns)
+    all_models_results_df = load_results_models()
 
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
-        init_cost, final_cost, execution_time = perform_test(
+        init_cost, final_cost, final_cost_baseline, execution_time = perform_test(
             model_name, problem, init_x
         )
         # Extract HP values for the current model
@@ -209,8 +245,22 @@ if __name__ == "__main__":
                         "model": [model_name.split("/")[-1]],
                         "initial_cost": [init_cost.item()],
                         "final_cost": [final_cost.item()],
+                        "final_cost_baseline": [final_cost_baseline.item()],
                         "execution_time": [execution_time],
                         **hp_values,
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        # Save results for all models
+        all_models_results_df = pd.concat(
+            [
+                all_models_results_df,
+                pd.DataFrame(
+                    {
+                        "model": FOLDER + "/" + model_name.split("/")[-1],
+                        "final_cost": final_cost.item(),
                     }
                 ),
             ],
@@ -244,3 +294,6 @@ if __name__ == "__main__":
     # Save updated results
     new_df.to_csv(RESULTS_FILE, index=False)
     print("Results saved to", RESULTS_FILE)
+
+    all_models_results_df.to_csv(RESULTS_FILE_ALL_MODEL, index=False)
+    print("All models results saved to", RESULTS_FILE_ALL_MODEL)

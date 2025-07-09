@@ -1,200 +1,234 @@
+import vrplib
 import pandas as pd
 import torch
-import os
 import numpy as np
-import random
-from tqdm import tqdm
-from multiprocessing import Pool
-import warnings
+from loguru import logger  # Enhanced logging capabilities
+
+from func import get_HP_for_model, set_seed, load_model
 
 import sys
+import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 from problem import CVRP
 from sa import sa
-from model import CVRPActorPairs
+from model import CVRPActorPairs, CVRPActor
 
-# Suppress warnings if needed
-warnings.filterwarnings("ignore")
+# Remove default logger
+logger.remove()
+# Add custom logger with colored output
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
+        "<blue>{file}:{line}</blue> | "  # File and line in blue
+        "<yellow>{message}</yellow>"  # Message in yellow
+    ),
+    colorize=True,
+)
 
-# Constants
-PATH = "wandb/Neural_Simulated_Annealing/models/"
-GROUP = "bench_model_temp"
-MODEL_NAME = "20250402_171304_a3bnyrfg"
-FULL_PATH = os.path.join(PATH, GROUP, MODEL_NAME)
-RESULTS_FILE = "res/model_on_bdd_swap_vs_2opt.csv"
-HEURISTIC = "mix"
-BATCH_SIZE = 20  # Number of parallel processes
+PATH = "wandb/Neural_Simulated_Annealing/"
+FOLDER = "baseline_methods_2" + "/models/"
+MODEL = "20250630_225812_yhajndhh"
+MODEL_PATH = PATH + FOLDER + MODEL
 
-# Configuration
-CFG = {
-    "N_PROBLEMS": 1,
-    "DEVICE": "cpu",
-    "EMBEDDING_DIM": 32,
-    "INIT_TEMP": 1.0,
-    "STOP_TEMP": 0.01,
-    "INNER_STEPS": 1,
-    "OUTER_STEPS": 1000,
-    "SCHEDULER": "lam",
-    "METHOD": "ppo",
-    "REWARD": "immediate",
-    "GAMMA": 0.9,
+cfg = {
+    "PROBLEM_DIM": 100,
+    "N_PROBLEMS": 10000,
+    "OUTER_STEPS": 20000,
+    "DEVICE": "mps",
+    "INIT": "sweep",
+    "SEED": 0,
+    "LOAD_PB": True,
 }
 
 
-def create_distance_matrix(coords):
-    """Vectorized distance matrix calculation."""
-    diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
-    return np.sqrt((diff**2).sum(axis=2))
+def init_problem_parameters(model_path: str, cfg: dict):
+    logger.info("Initializing problem parameters...")
+    HP = get_HP_for_model(model_path)
+    HP.update(cfg)
+    logger.info("Problem parameters initialized.")
+    return HP
 
 
-def calculate_route_cost(route, distance_matrix):
-    """Calculate total distance of a route."""
-    return distance_matrix[route[:-1], route[1:]].sum()
-
-
-def extract_loss(filename):
-    """Extract loss value from filename."""
-    try:
-        return float((filename.split("_")[-1])[:-3])
-    except ValueError:
-        return float("inf")
-
-
-def load_model(model, folder):
-    """Load model with smallest loss."""
-    files = [f for f in os.listdir(folder) if f.endswith(".pt")]
-    if files:
-        best_file = min(files, key=extract_loss)
-        model.load_state_dict(
-            torch.load(os.path.join(folder, best_file), weights_only=True)
-        )
-    return model
-
-
-def initialize_results_df():
-    """Initialize or load results DataFrame."""
-    if os.path.exists(RESULTS_FILE):
-        print(f"Loading existing results file from {RESULTS_FILE}")
-        return pd.read_csv(RESULTS_FILE)
-    return pd.DataFrame(
-        columns=[
-            "model",
-            "problem_name",
-            "initial_cost",
-            "final_cost",
-            "best_cost",
-            "best_real_cost",
-            "Diff_bestCost_vs_realBestCost",
-            "Diff_Fcost_vs_BestCost",
-        ]
+def init_pb(
+    cfg: dict, coords: torch.Tensor, demands: torch.Tensor, capacities: torch.Tensor
+):
+    """Initialize the CVRP problem and generate initial solutions."""
+    logger.info("Initializing CVRP problem...")
+    problem = CVRP(
+        cfg["PROBLEM_DIM"],
+        cfg["N_PROBLEMS"],
+        capacities,
+        device=cfg["DEVICE"],
+        params=cfg,
     )
+    problem.manual_seed(cfg["SEED"])
+    params = problem.generate_params("test", True, coords, demands)
+    problem.set_params(params)
+    init_x = problem.generate_init_x("sweep")
+    initial_cost = torch.mean(problem.cost(init_x))
+    logger.info(f"CVRP problem initialized. Initial cost: {initial_cost}")
+    return problem, init_x, initial_cost
 
 
-def process_single_row(row_dict):
-    """Process a single row - modified for parallel processing."""
-    try:
-        # Set seeds for each process (important for reproducibility)
-        random.seed(0)
-        np.random.seed(0)
-        torch.manual_seed(0)
-
-        # Prepare data
-        coord = row_dict["node_coord"]
-        distance_matrix = create_distance_matrix(coord)
-        best_real_cost = row_dict["cost"]
-
-        # Calculate best cost from solution
-        solution = np.concatenate(
-            [[0]] + [np.array(lst) for lst in row_dict["solution"]] + [[0]]
+def init_res(path: str, names: list[str] = None):
+    """Initialize results DataFrame."""
+    logger.info(f"Initializing results DataFrame at path: {path}")
+    if not os.path.exists(path):
+        df = pd.DataFrame(
+            columns=[
+                "name",
+            ]
         )
-        best_cost = calculate_route_cost(solution, distance_matrix)
-
-        # Initialize problem
-        row_dict["HEURISTIC"] = HEURISTIC
-        problem = CVRP(device="cpu", params=row_dict)
-        problem.manual_seed(0)
-        params = problem.generate_params("test", True)
-        params = {k: v.to("cpu") for k, v in params.items()}
-        problem.set_params(params)
-
-        # Generate initial solution and calculate cost
-        init_x = problem.generate_init_x()
-        init_route = init_x.squeeze(-1).squeeze(0).numpy()
-        init_cost = calculate_route_cost(init_route, distance_matrix)
-
-        # Load model inside each process (important for multiprocessing)
-        actor = CVRPActorPairs(
-            device="cpu", mixed_heuristic=True if HEURISTIC == "mix" else False
-        )
-        actor = load_model(actor, FULL_PATH)
-
-        # Run simulated annealing
-        test = sa(
-            actor,
-            problem,
-            init_x,
-            CFG,
-            replay_buffer=None,
-            baseline=False,
-            greedy=False,
-        )
-        final_route = test["best_x"].squeeze(-1).squeeze(0).numpy().astype(int)
-        final_cost = calculate_route_cost(final_route, distance_matrix)
-
-        return {
-            "model": MODEL_NAME,
-            "problem_name": row_dict["name"],
-            "initial_cost": init_cost,
-            "final_cost": final_cost,
-            "best_cost": best_cost,
-            "best_real_cost": best_real_cost,
-            "Diff_bestCost_vs_realBestCost": (best_cost - best_real_cost),
-            "Diff_Fcost_vs_BestCost": (final_cost - best_cost),
-        }
-    except Exception as e:
-        print(f"Error processing {row_dict.get('name', 'unknown')}: {str(e)}")
-        return None
+        if names is not None:
+            df["name"] = names
+        logger.info("Results DataFrame created.")
+    else:
+        df = pd.read_csv(path)
+        logger.info("Results DataFrame loaded from existing file.")
+    return df
 
 
-def process_batch(rows):
-    """Process a batch of rows in parallel."""
-    with Pool(processes=BATCH_SIZE) as pool:
-        results = list(tqdm(pool.imap(process_single_row, rows), total=len(rows)))
-    return [r for r in results if r is not None]  # Filter out failed cases
+def calculate_distance(
+    solutions: torch.Tensor, node_coords_tensor: torch.Tensor
+) -> torch.Tensor:
+    """
+    Calculate the total distance for each solution based on the node coordinates.
 
+    Args:
+        solutions (torch.Tensor): A tensor containing the solutions (routes).
+        node_coords_tensor (torch.Tensor): A tensor containing the non-normalized
+        node coordinates.
 
-def main():
-    """Main execution function."""
-    # Initialize results DataFrame
-    new_df = initialize_results_df()
+    Returns:
+        torch.Tensor: A tensor containing the total distance for each solution.
+    """
+    logger.info("Calculating distances for solutions...")
+    total_distances = torch.zeros(solutions.size(0), device=solutions.device)
 
-    # Load problem data
-    df = pd.read_pickle("bdd/bdd.pkl")
-    df = df[df["dimension"] <= 500]
+    for i, solution in enumerate(solutions):
+        distance = 0.0
+        route_coords = node_coords_tensor[i]  # Index using batch dimension
+        for j in range(len(solution) - 1):
+            distance += torch.sqrt(
+                torch.sum(
+                    (route_coords[solution[j]] - route_coords[solution[j + 1]]) ** 2
+                )
+            )
+        total_distances[i] = distance
 
-    # Convert to list of dicts for parallel processing
-    rows = [row.to_dict() for _, row in df.iterrows()]
-
-    # Process in batches to avoid memory issues
-    batch_results = []
-    for i in tqdm(range(0, len(rows), BATCH_SIZE), desc="Processing batches"):
-        batch = rows[i : i + BATCH_SIZE]
-        batch_results.extend(process_batch(batch))
-
-    # Combine results
-    if batch_results:
-        new_df = pd.concat([new_df, pd.DataFrame(batch_results)], ignore_index=True)
-
-    # Save results
-    new_df.to_csv(RESULTS_FILE, index=False)
-    print(f"Saved results file at {RESULTS_FILE}")
+    logger.info("Distances calculated successfully.")
+    return total_distances
 
 
 if __name__ == "__main__":
-    # # Important for Windows compatibility
-    # if os.name == "nt":
-    #     from multiprocessing import freeze_support
+    logger.info("Starting evaluation script...")
+    # Set seed for reproducibility
+    set_seed(cfg["SEED"])
+    logger.info("Seed set for reproducibility.")
 
-    #     freeze_support()
-    main()
+    path_file = "bdd/Vrp-Set-XML100/instances/"
+    path_baseline = "res/Vrp-Set-XML100_res.csv"
+    df = pd.read_csv(path_baseline)
+    logger.info(f"Loaded baseline data from {path_baseline}.")
+    instances = [path_file + name + ".vrp" for name in df["name"]]
+
+    names = []
+    dimensions = []
+    capacities = []
+    node_coords = []
+    demands = []
+    depots = []
+    opt_costs = []
+
+    logger.info("Reading VRP instances...")
+    for instance_path in instances:
+        data = vrplib.read_instance(instance_path)
+        name = data["name"]
+        names.append(name)
+        dimensions.append(data["dimension"])
+        capacities.append(data["capacity"])
+        node_coords.append(data["node_coord"])
+        demands.append(data["demand"])
+        depots.append(data["depot"])
+    logger.info("Finished reading VRP instances.")
+
+    # Create a tensor for each attribute
+    logger.info("Creating tensors for problem attributes...")
+    dimension_tensor = torch.tensor(dimensions)
+    capacity_tensor = torch.tensor(capacities)
+    node_coords_tensor = torch.tensor(np.array(node_coords))
+    demands_tensor = torch.tensor(np.array(demands))
+    depots_tensor = torch.tensor(np.array(depots))
+
+    # Normalize node_coords_tensor between 0 and 1 for each row
+    logger.info("Normalizing node coordinates...")
+    min_coords = torch.min(node_coords_tensor, dim=1, keepdim=True).values
+    max_coords = torch.max(node_coords_tensor, dim=1, keepdim=True).values
+    node_coords_tensor_n = (node_coords_tensor - min_coords) / (max_coords - min_coords)
+    logger.info("Node coordinates normalized.")
+
+    CFG = init_problem_parameters(MODEL_PATH, cfg)
+    problem, init_x, initial_cost = init_pb(
+        CFG, node_coords_tensor_n, demands_tensor, capacity_tensor
+    )
+
+    # Initialize models
+    logger.info("Initializing models...")
+    if CFG["PAIRS"]:
+        actor = CVRPActorPairs(
+            CFG["EMBEDDING_DIM"],
+            num_hidden_layers=CFG["NUM_H_LAYERS"],
+            device=CFG["DEVICE"],
+            mixed_heuristic=True if CFG["HEURISTIC"] == "mix" else False,
+        )
+    else:
+        actor = CVRPActor(
+            CFG["EMBEDDING_DIM"],
+            CFG["ENTRY"],
+            num_hidden_layers=CFG["NUM_H_LAYERS"],
+            device=CFG["DEVICE"],
+            mixed_heuristic=True if CFG["HEURISTIC"] == "mix" else False,
+            method=CFG["UPDATE_METHOD"],
+        )
+    logger.info("Models initialized.")
+
+    # Load model
+    logger.info(f"Loading model from {MODEL_PATH}...")
+    actor = load_model(actor, MODEL_PATH, "actor")
+    logger.info("Model loaded successfully.")
+
+    logger.info("Starting simulated annealing...")
+    test = sa(
+        actor,
+        problem,
+        init_x,
+        CFG,
+        replay_buffer=None,
+        baseline=False,
+        greedy=False,
+    )
+    final_cost = torch.mean(test["min_cost"])
+    logger.info(f"Simulated annealing completed. Final cost: {final_cost:.4f}")
+
+    solutions = test["best_x"].cpu().detach()
+
+    # Calculate distances using the solutions and non-normalized node coordinates
+    distances = calculate_distance(solutions, node_coords_tensor)
+    logger.info(f"Calculated distances: {distances}")
+
+    tmp_df = pd.DataFrame(
+        {
+            "name": names,
+            FOLDER + MODEL: distances,
+        }
+    )
+
+    logger.info("Saving results...")
+    df = init_res("res/models_res_on_bdd.csv", names=names)
+    df = pd.merge(df, tmp_df, on="name", how="outer")
+    df.to_csv("res/models_res_on_bdd.csv", index=False)
+    logger.info("Results saved to res/models_res_on_bdd.csv.")
+    print("Results saved to res/models_res_on_bdd.csv")

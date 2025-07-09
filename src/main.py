@@ -4,6 +4,7 @@
 import torch  # PyTorch for deep learning
 import numpy as np  # NumPy for numerical operations
 import random  # For random operations
+
 from tqdm import tqdm  # Progress bar for iterations
 from loguru import logger  # Enhanced logging capabilities
 
@@ -15,14 +16,12 @@ from model import (
     CVRPActorPairs,
     CVRPCritic,
 )  # Neural network models
-from ppo2 import ppo  # Proximal Policy Optimization implementation
+from ppo import ppo  # Proximal Policy Optimization implementation
 from sa import sa  # Simulated Annealing implementation
 from problem import CVRP  # CVRP problem definition
 from replay import ReplayBuffer  # Experience replay for RL
 from Logger import WandbLogger  # Weights & Biases logging
 from HP import _HP, get_script_arguments  # Hyperparameter management
-import os  # Operating system interfaces
-import re  # Regular expressions for file handling
 
 # --------------------------------
 # Profiling tools
@@ -69,43 +68,6 @@ if cfg["LOG"]:
     logger.info(f"WandB model save directory: {WandbLogger._instance.model_dir}")
 
 
-def cleanup_temp_models(model_dir, project_name, group_name, keep=3):
-    """
-    Keeps only the specified number of best temperature models (with lowest loss).
-
-    Args:
-        model_dir: Directory containing model files
-        project_name: Project name used in filename
-        group_name: Group name used in filename
-        keep: Number of models to keep (default: 3)
-    """
-
-    # Pattern to match temp model files and extract loss
-    pattern = f"{project_name}_{group_name}_temp_epoch_\\d+_loss_(\\d+\\.\\d+).pt"
-    model_files = []
-
-    # Find all temp model files and extract their loss values
-    for file in os.listdir(model_dir):
-        match = re.match(pattern, file)
-        if match:
-            loss = float(match.group(1))
-            model_files.append((file, loss))
-
-    # Sort models by loss (ascending)
-    model_files.sort(key=lambda x: x[1])
-
-    # Delete excess models, keeping only the best ones
-    if len(model_files) > keep:
-        for file, _ in model_files[keep:]:
-            try:
-                os.remove(os.path.join(model_dir, file))
-                logger.info(f"Removed excess temp model: {file}")
-            except Exception as e:
-                logger.error(f"Failed to remove {file}: {e}")
-
-    return [f for f, _ in model_files[:keep]]
-
-
 def log_training_and_test_metrics(
     actor_loss, critic_loss, avg_actor_grad, avg_critic_grad, test, epoch, cfg
 ):
@@ -126,13 +88,12 @@ def log_training_and_test_metrics(
             # Cost metrics
             "Min_cost": torch.mean(test["min_cost"]),
             # Improvement metrics
-            "N_gain": torch.mean(test["ngain"]),
             "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
             # Search statistics
             "Acceptance_rate": torch.mean(test["n_acc"]),
-            "Rejection_rate": torch.mean(test["n_rej"]),
-            "Step_best_cost": torch.mean(test["best_step"]),
+            "Step_best_cost": torch.mean(test["best_step"]) / cfg["OUTER_STEPS"],
             "Valid_percentage": torch.mean(test["is_valid"]),
+            "Final_capacity_left": torch.mean(test["capacity_left"]),
         }
         logs.update(test_logs)
         if cfg["HEURISTIC"] == "mix":
@@ -191,12 +152,12 @@ def train_ppo(
         replay_buffer=replay,
         baseline=False,
         greedy=False,
-        train=True if step < cfg["N_EPOCHS"] * 0.75 else False,
+        train=True,
     )
 
     # Optimize policy with PPO
     actor_loss, critic_loss = ppo(
-        actor, critic, init_x.shape[1], replay, actor_opt, critic_opt, cfg
+        actor, critic, init_x.shape[1], replay, actor_opt, critic_opt, step, cfg
     )
 
     # Compute gradient statistics for monitoring
@@ -233,6 +194,7 @@ def test_model(
         replay_buffer=None,
         baseline=False,
         greedy=False,
+        train=False,
     )
     return test
 
@@ -279,8 +241,11 @@ def main(cfg: dict) -> None:
     problem_test.manual_seed(0)
     # Generate new problem instances
     path = "pb/problem_data_dim100_load50.pt"
-    problem_test.load_from_pt(path)
-    init_x_test = problem_test.generate_init_x()
+    tmp = torch.load(path, map_location=cfg["DEVICE"])
+    coords, demands = tmp["coords"], tmp["demands"]
+    params = problem_test.generate_params("test", True, coords, demands)
+    problem_test.set_params(params)
+    init_x_test = problem_test.generate_init_x("sweep")
     init_cost = torch.mean(problem_test.cost(init_x_test))
     logger.info(
         "Test problem initialized with params: "
@@ -305,6 +270,7 @@ def main(cfg: dict) -> None:
             num_hidden_layers=cfg["NUM_H_LAYERS"],
             device=cfg["DEVICE"],
             mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
+            method=cfg["UPDATE_METHOD"],
         )
     logger.info(f"Actor model initialized: {actor.__class__.__name__}")
     actor.manual_seed(cfg["SEED"])
@@ -330,18 +296,24 @@ def main(cfg: dict) -> None:
         cfg,
     )
     train_loss = torch.mean(test_init["min_cost"])
+    logger.info(f"Initial test loss: {train_loss:.4f}")
 
     early_stopping_counter = 0
     early_stop_value = float("inf")
-    with tqdm(range(cfg["N_EPOCHS"])) as progress_bar:
+    logger.info(
+        f"Starting training loop with INIT method: {cfg['INIT']}, CLUSTERING: "
+        f"{cfg['CLUSTERING']}",
+    )
+    with tqdm(range(cfg["N_EPOCHS"]), unit="epoch", colour="blue") as progress_bar:
         for epoch in progress_bar:
+            # for epoch in range(cfg["N_EPOCHS"]):
             # Generate new problem instances
             params = problem.generate_params()
             params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
             problem.set_params(params)
 
             # Get initial solutions
-            init_x = problem.generate_init_x()
+            init_x = problem.generate_init_x(cfg["INIT"])
 
             # Training phase
             train_results = train_ppo(
@@ -352,7 +324,7 @@ def main(cfg: dict) -> None:
                 problem,
                 init_x,
                 cfg,
-                step=epoch,
+                step=epoch + 1,
             )
             (
                 train_in,
@@ -362,7 +334,7 @@ def main(cfg: dict) -> None:
                 avg_critic_grad,
             ) = train_results
             # Test phase every 10 epochs
-            if epoch % 10 == 0:
+            if epoch % 10 == 0 and epoch != 0:
                 test = test_model(
                     actor,
                     problem_test,
@@ -370,10 +342,16 @@ def main(cfg: dict) -> None:
                     cfg,
                 )
                 train_loss = torch.mean(test["min_cost"])
+                # logger.info(f"Epoch {epoch}: Loss: {train_loss:.4f}")
                 # Inverse clustering flag for next 10 epoch
                 if cfg["ALT_CLUSTERING"]:
                     problem.clustering = not problem.clustering
-
+                    logger.info(
+                        f"Clustering set to {problem.clustering} at epoch {epoch}"
+                    )
+            if cfg["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
+                cfg["INIT"] = cfg["INIT_LIST"][(epoch // 5) % len(cfg["INIT_LIST"])]
+                logger.info(f"Changed INIT method to {cfg['INIT']} at epoch {epoch}")
             # Logging
             if cfg["LOG"]:
                 log_training_and_test_metrics(
@@ -381,7 +359,7 @@ def main(cfg: dict) -> None:
                     critic_loss,
                     avg_actor_grad,
                     avg_critic_grad,
-                    test if epoch != 0 else test_init,
+                    test if (epoch != 0 and epoch > 10) else test_init,
                     epoch,
                     cfg,
                 )
@@ -402,16 +380,18 @@ def main(cfg: dict) -> None:
             if epoch % 10 == 0:
                 if train_loss.item() >= early_stop_value:
                     early_stopping_counter += 1
+                    logger.info(
+                        f"Epoch {epoch}: Early stopping counter: "
+                        f"{early_stopping_counter}"
+                    )
                 else:
                     early_stopping_counter = 0
                     early_stop_value = min(train_loss.item(), early_stop_value)
 
             if early_stopping_counter > 5:
                 logger.warning(
-                    (
-                        f"Early stopping triggered at epoch {epoch} "
-                        f"with loss {early_stop_value:.4f}"
-                    )
+                    f"Early stopping triggered at epoch {epoch} "
+                    f"with loss {early_stop_value:.4f}"
                 )
                 break
 

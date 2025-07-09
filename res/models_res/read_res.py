@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-CSV_FILE = "res_model_invalid_step"  # Name of the CSV file without extension
+CSV_FILE = "res_model_Capacity_reward_swap"  # Name of the CSV file without extension
 PATH = "./res/models_res/"
 CSV_PATH = os.path.join(PATH, CSV_FILE + ".csv")
 

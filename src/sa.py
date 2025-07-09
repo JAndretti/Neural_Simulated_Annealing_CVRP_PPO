@@ -5,6 +5,7 @@ from problem import Problem
 from replay import ReplayBuffer
 from utils import extend_to
 from scheduler import Scheduler
+from tqdm import tqdm
 
 
 def metropolis_accept(
@@ -138,6 +139,7 @@ def sa(
     # Initialize optimization tracking variables
     best_solution = current_solution = initial_solution
     best_cost = problem.cost(best_solution)
+    capacity_left = problem.capacity_utilization(best_solution)
     initial_cost = best_cost.clone()
     cumulative_cost = best_cost.clone()
     current_cost = best_cost.clone()
@@ -196,9 +198,16 @@ def sa(
     )
 
     current_state = problem.to_state(*components).to(device)
-
+    desc = "Train/ " if train else "Test/ "
+    desc += "Simulated Annealing Progress"
     # Main optimization loop over temperature steps
-    for step in range(config["OUTER_STEPS"]):
+    for step in tqdm(
+        range(config["OUTER_STEPS"]),
+        desc=desc,
+        colour="green",
+        unit="step",
+        leave=False,
+    ):
         # Inner loop at fixed temperature
         for inner_step in range(config["INNER_STEPS"]):
             if record_state:
@@ -231,7 +240,7 @@ def sa(
             proposed_cost = problem.cost(proposed_solution)
 
             # Metrics is valid
-            is_valid_history.append(((is_valid == 1).sum() / is_valid.shape[0]).item())
+            is_valid_history.append(is_valid.to(torch.float32).mean().item())
             # Calculate improvement
             cost_improvement = current_cost - proposed_cost
 
@@ -259,6 +268,13 @@ def sa(
                 + (1 - is_accepted_expanded) * solution_components
             ).long()
 
+            if config["CAPACITY_REWARD"]:
+                new_capacity_left = problem.capacity_utilization(current_solution)
+                diff_capacity = config["CAPACITY_REWARD_FACTOR"] * (
+                    new_capacity_left - capacity_left
+                )
+                actual_improvement -= diff_capacity
+                capacity_left = new_capacity_left
             # Update best solution tracking
             if record_state:
                 cost_history.append(current_cost)
@@ -303,6 +319,13 @@ def sa(
                             reward_signal * is_valid
                             + (1 - is_valid) * -config["NEG_REWARD"]
                         )
+                    if config["NORMALIZE_REWARD"]:
+                        # Normalize rewards to [-1, 1] range
+                        # Find the max absolute value for scaling
+                        max_abs_reward = torch.max(torch.abs(reward_signal))
+                        # Avoid division by zero
+                        if max_abs_reward > 0:
+                            reward_signal = reward_signal / max_abs_reward
                 elif config["REWARD"] == "min_cost":
                     reward_signal = -best_cost.view(-1, 1)
                 elif config["REWARD"] == "primal":
@@ -331,6 +354,8 @@ def sa(
         final_transition = replay_buffer.pop()
         replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
 
+    final_capacity_left = problem.capacity_utilization(best_solution)
+
     dict = {
         "best_x": best_solution,
         "min_cost": best_cost,
@@ -348,6 +373,7 @@ def sa(
         "reward": reward_signal,
         "temperature": temperature,
         "best_step": best_cost_step.float(),
+        "capacity_left": final_capacity_left,
     }
     if config["HEURISTIC"] == "mix":
         dict["ratio"] = ratio / config["OUTER_STEPS"]

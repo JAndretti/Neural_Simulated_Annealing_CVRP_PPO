@@ -2,18 +2,9 @@
 LOG: 
 - True 
 
-NEG_REWARD:
-- 0
-- 1
+GROUP: 
+- "baseline_methods_2"
 
-INIT:
-- "sweep"
-- "isolate"
-
-HEURISTIC: 
-- "insertion" 
-- "two_opt"
-
-BATCH_SIZE: 
-- 1024
-- 512
+UPDATE_METHOD: 
+- "rm_depot"
+- "free"

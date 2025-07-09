@@ -23,6 +23,11 @@ def distance(x1, y1, x2, y2):
 # Function to calculate the distance matrix
 def compute_euclidean_distance_matrix(locations):
     """Creates callback to return distance between points."""
+    if all(0 <= coord <= 1 for loc in locations for coord in loc):
+        MULT = 100
+    else:
+        MULT = 1
+    MULT = 100
     distances = {}
     for from_counter, from_node in enumerate(locations):
         distances[from_counter] = {}
@@ -37,7 +42,7 @@ def compute_euclidean_distance_matrix(locations):
                             (from_node[0] - to_node[0]), (from_node[1] - to_node[1])
                         )
                     )
-                    * 100
+                    * MULT
                 )
 
     return distances
@@ -173,22 +178,27 @@ def solve_instance(args):
     return solution, distance
 
 
-def or_tools(params, cfg):
-    num_cores = 20  # As specified by the user
+def or_tools(params, cfg, mult_thread=False):
+    # to do in if __name__ == '__main__':
+    num_cores = 35  # As specified by the user
 
     # Prepare arguments for each call to solve_instance
     args_list = [
-        (coord, demand, cfg["OR_TOOLS_TIME"], cfg["MAX_LOAD"], cfg["OR_DIM"])
-        for coord, demand in zip(params["coords"], params["demands"])
-    ]
-
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        results = list(
-            tqdm(pool.imap(solve_instance, args_list), total=len(params["coords"]))
+        (coord, demand, cfg["OR_TOOLS_TIME"], max_load, dimension)
+        for coord, demand, max_load, dimension in zip(
+            params["coords"], params["demands"], params["MAX_LOAD"], params["OR_DIM"]
         )
+    ]
+    if mult_thread:
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            results = list(
+                tqdm(pool.imap(solve_instance, args_list), total=len(params["coords"]))
+            )
 
-    # Unzip results
-    solutions, distances = zip(*results)
+        # Unzip results
+        solutions, distances = zip(*results)
+    else:
+        solutions, distances = zip(*[solve_instance(args) for args in args_list])
 
     return list(solutions), list(distances)
 
