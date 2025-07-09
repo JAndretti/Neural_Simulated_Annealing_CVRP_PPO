@@ -11,6 +11,7 @@ wandb/
 train.sh
 
 /res/**
+!/res/Vrp-Set-XML100_res.csv
 !/res/models_res/
 !/res/models_res/read_res.py
 
