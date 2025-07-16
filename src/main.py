@@ -230,6 +230,7 @@ def main(cfg: dict) -> None:
         params=cfg,
     )
     problem.manual_seed(cfg["SEED"])
+    problem.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
 
     problem_test = CVRP(
         100,
@@ -240,12 +241,13 @@ def main(cfg: dict) -> None:
     )
     problem_test.manual_seed(0)
     # Generate new problem instances
-    path = "pb/problem_data_dim100_load50.pt"
+    path = "generated_problem/problem_data_dim100_load50.pt"
     tmp = torch.load(path, map_location=cfg["DEVICE"])
     coords, demands = tmp["coords"], tmp["demands"]
     params = problem_test.generate_params("test", True, coords, demands)
     problem_test.set_params(params)
     init_x_test = problem_test.generate_init_x("sweep")
+    problem_test.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
     init_cost = torch.mean(problem_test.cost(init_x_test))
     logger.info(
         "Test problem initialized with params: "

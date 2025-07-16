@@ -4,14 +4,13 @@ import torch
 import numpy as np
 from loguru import logger  # Enhanced logging capabilities
 
-from func import get_HP_for_model, set_seed, load_model
+from func import init_problem_parameters, set_seed, load_model, init_pb
 
 import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from problem import CVRP
 from sa import sa
 from model import CVRPActorPairs, CVRPActor
 
@@ -37,40 +36,15 @@ cfg = {
     "PROBLEM_DIM": 100,
     "N_PROBLEMS": 10000,
     "OUTER_STEPS": 20000,
-    "DEVICE": "mps",
+    "DEVICE": (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    ),
     "INIT": "sweep",
     "SEED": 0,
     "LOAD_PB": True,
 }
-
-
-def init_problem_parameters(model_path: str, cfg: dict):
-    logger.info("Initializing problem parameters...")
-    HP = get_HP_for_model(model_path)
-    HP.update(cfg)
-    logger.info("Problem parameters initialized.")
-    return HP
-
-
-def init_pb(
-    cfg: dict, coords: torch.Tensor, demands: torch.Tensor, capacities: torch.Tensor
-):
-    """Initialize the CVRP problem and generate initial solutions."""
-    logger.info("Initializing CVRP problem...")
-    problem = CVRP(
-        cfg["PROBLEM_DIM"],
-        cfg["N_PROBLEMS"],
-        capacities,
-        device=cfg["DEVICE"],
-        params=cfg,
-    )
-    problem.manual_seed(cfg["SEED"])
-    params = problem.generate_params("test", True, coords, demands)
-    problem.set_params(params)
-    init_x = problem.generate_init_x("sweep")
-    initial_cost = torch.mean(problem.cost(init_x))
-    logger.info(f"CVRP problem initialized. Initial cost: {initial_cost}")
-    return problem, init_x, initial_cost
 
 
 def init_res(path: str, names: list[str] = None):
@@ -158,7 +132,7 @@ if __name__ == "__main__":
     # Create a tensor for each attribute
     logger.info("Creating tensors for problem attributes...")
     dimension_tensor = torch.tensor(dimensions)
-    capacity_tensor = torch.tensor(capacities)
+    capacity_tensor = torch.tensor(capacities).unsqueeze(-1)
     node_coords_tensor = torch.tensor(np.array(node_coords))
     demands_tensor = torch.tensor(np.array(demands))
     depots_tensor = torch.tensor(np.array(depots))
@@ -174,7 +148,6 @@ if __name__ == "__main__":
     problem, init_x, initial_cost = init_pb(
         CFG, node_coords_tensor_n, demands_tensor, capacity_tensor
     )
-
     # Initialize models
     logger.info("Initializing models...")
     if CFG["PAIRS"]:

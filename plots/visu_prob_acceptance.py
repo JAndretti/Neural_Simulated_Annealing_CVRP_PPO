@@ -39,5 +39,5 @@ plt.grid(True)
 # # Display the plot
 # plt.show()
 # Save the plot
-plt.savefig("./Scripts/plots/acceptance_probability.png", dpi=300)
+plt.savefig("plots/acceptance_probability.png", dpi=300)
 plt.close()

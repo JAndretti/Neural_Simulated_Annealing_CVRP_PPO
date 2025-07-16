@@ -62,11 +62,13 @@ if __name__ == "__main__":
     # Plot the results
     colors = ["lightsalmon", "skyblue", "lightgreen", "salmon", "lightcoral", "pink"]
     plt.figure(figsize=(14, 12))
-    plt.bar(methods, res, color=colors)
+    plt.bar(methods, res, label=methods, color=colors)
     for i, method in enumerate(methods):
-        plt.text(i, res[i] + 0.5, f"{times[i]:.2f}s", ha="center", fontsize=8)
-    plt.xlabel("Initialization Method")
-    plt.ylabel("Average Cost")
-    plt.xticks(rotation=45)
-    plt.title("Comparison of Initialization Methods")
-    plt.savefig("Scripts/plots/init_methods_comparison.png")
+        plt.text(i, res[i] + 0.5, f"{times[i]:.2f}s", ha="center", fontsize=14)
+    plt.yticks(fontsize=16)
+    plt.title("Comparison of Initialization Methods", fontsize=20)
+    plt.legend(title="Initialization Method", fontsize=14, title_fontsize=16)
+    plt.xticks([])
+    plt.ylabel("Average Cost", fontsize=16)
+    # plt.xticks(rotation=45)
+    plt.savefig("plots/init_methods_comparison.png")

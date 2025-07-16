@@ -9,19 +9,19 @@ for folder in ["wandb", "res", "bdd"]:
     os.makedirs(folder, exist_ok=True)
 
 link_bdd = [
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-A.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-B.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-E.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-F.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-M.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-P.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-CMT.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-tai.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-Golden.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-Li.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-X.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-XXL.zip",
-    "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-D.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-A.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-B.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-E.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-F.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-M.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-P.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-CMT.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-tai.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-Golden.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-Li.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-X.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-XXL.zip",
+    # "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-D.zip",
     "http://vrp.atd-lab.inf.puc-rio.br/media/com_vrp/instances/Vrp-Set-XML100.zip",
 ]
 

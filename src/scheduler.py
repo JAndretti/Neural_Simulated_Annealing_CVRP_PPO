@@ -109,10 +109,14 @@ class Step:
     def step(self, epoch):
         if (
             epoch == int(self.step_max / 2)
+            or epoch == int(2 * self.step_max / 3)
             or epoch == int(3 * self.step_max / 4)
             or epoch == int(6 * self.step_max / 7)
         ):
-            self.temp = self.temp / 3
+            if epoch == int(6 * self.step_max / 7):
+                self.temp = self.T_min
+            else:
+                self.temp = self.temp / 2
         return torch.tensor(self.temp)
 
 

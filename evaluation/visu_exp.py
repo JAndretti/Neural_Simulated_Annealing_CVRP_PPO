@@ -7,7 +7,13 @@ import torch
 from rich import print
 
 
-from func import get_HP_for_model, set_seed, load_model, plot_cvrp_solution
+from func import (
+    init_problem_parameters,
+    set_seed,
+    load_model,
+    plot_cvrp_solution,
+    init_pb,
+)
 
 # Add src path to PYTHONPATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -25,21 +31,15 @@ MODEL_DIR = glob(
 SEED = 0
 
 cfg = {
-    "PROBLEM_DIM": 100,
+    "PROBLEM_DIM": 500,
     "MAX_LOAD": 50,
     "N_PROBLEMS": 1,
-    "OUTER_STEPS": 100000,
+    "OUTER_STEPS": 20000,
     "DEVICE": "cpu",
-    "INIT": "nearest_neighbor",
+    "INIT": "Clark_and_Wright",
     "SEED": 0,
     "LOAD_PB": False,
 }
-
-
-def init_problem_parameters(cfg: dict):
-    HP = get_HP_for_model(MODEL_DIR)
-    HP.update(cfg)
-    return HP
 
 
 def cvrp_2opt_vectorized(
@@ -144,7 +144,7 @@ def calculate_route_distance(route, coords):
 
 def main():
     set_seed(SEED)  # For reproducibility
-    CFG = init_problem_parameters(cfg)
+    CFG = init_problem_parameters(MODEL_DIR, cfg)
     # Print the configuration dictionary
     print("Configuration parameters:")
     for key, value in CFG.items():
@@ -159,9 +159,7 @@ def main():
         params=CFG,
     )
     problem.manual_seed(SEED)
-    params = problem.generate_params()
-    params = {k: v.to(CFG["DEVICE"]) for k, v in params.items()}
-    problem.set_params(params)
+    problem, init_x, initial_cost = init_pb(CFG)
 
     # Initialize actor
     if CFG["PAIRS"]:
@@ -183,7 +181,7 @@ def main():
     actor = load_model(actor, MODEL_DIR, "actor")
 
     # apply 2-opt intra-route optimization
-    init_x = problem.generate_init_x(CFG["INIT"])
+    # init_x = problem.generate_init_x(CFG["INIT"])
     coordinates = problem.state_encoding
     init_x_2opt = cvrp_2opt_vectorized(init_x, coordinates, max_iterations=10000)
 
@@ -236,6 +234,10 @@ def main():
         "MAX_LOAD": [CFG["MAX_LOAD"]],
         "OR_DIM": [CFG["PROBLEM_DIM"]],
     }
+    print(
+        f"Testing with OR-Tools with time limit of {or_tools_cfg['OR_TOOLS_TIME']} ",
+        "seconds",
+    )
     or_tools_solution = test_or_tools(params, or_tools_cfg)
     if or_tools_solution is not None:
         or_tools_cost = problem.cost(or_tools_solution)
@@ -478,6 +480,13 @@ def main():
     else:
         print("No OR-Tools solution found.")
     # Plot the best solution (routes)
+    plt0 = plot_cvrp_solution(
+        problem.state_encoding,
+        None,
+        title="CVRP Problem (No Solution)",
+        show_routes=False,  # Ensure no routes are displayed, only points
+    )
+
     plt1 = plot_cvrp_solution(
         problem.state_encoding,
         result_2opt,
@@ -499,6 +508,8 @@ def main():
         result_baseline_2_opt,
         title=f"Baseline CVRP Solution, cost: {min_cost_2opt_baseline:.4f}",
     )  # Plot baseline solution
+    plt.figure(plt0.number)
+    plt.show()
 
     # Display both solution plots
     plt.figure(plt1.number)

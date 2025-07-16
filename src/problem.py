@@ -184,9 +184,6 @@ class CVRP(Problem):
         """
         super().__init__(device)
         self.params = params or {}
-        self.set_heuristic(
-            self.params["HEURISTIC"], self.params["MIX1"], self.params["MIX2"]
-        )
         self._init_problem_parameters(dim, n_problems, capacities)
 
     def set_heuristic(self, heuristic: str, mix1: str = None, mix2: str = None) -> None:
@@ -218,7 +215,7 @@ class CVRP(Problem):
             # Load from predefined problem
             self.dim = dim
             self.clustering = False
-            self.capacity = capacities.unsqueeze(-1).to(self.device)
+            self.capacity = capacities.to(self.device)
         else:
             # Initialize random problem
             self.dim = dim
@@ -229,7 +226,8 @@ class CVRP(Problem):
                 dtype=torch.float32,
             )
             self.clustering = self.params["CLUSTERING"]
-            self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
+            if self.clustering:
+                self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
 
     def _set_demands_coords(self, coords: torch.Tensor, demands: torch.Tensor) -> None:
         """Set coordinates and demands for the problem if loaded problem."""
@@ -623,6 +621,10 @@ class CVRP(Problem):
             sol = generate_Clark_and_Wright(self).to(self.device)
         elif self.params["INIT"] == "nearest_neighbor":
             sol = generate_nearest_neighbor(self).to(self.device)
+        else:
+            raise ValueError(
+                f"Unsupported initialization method: {self.params['INIT']}"
+            )
         valid = self.is_feasible(sol).all()
         if valid is False:
             logger.warning(

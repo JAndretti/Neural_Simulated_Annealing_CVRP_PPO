@@ -213,7 +213,11 @@ def ppo(
     problem_dim = pb_dim
     gamma = cfg["GAMMA"]  # Discount factor for future rewards
     device = cfg["DEVICE"]  # Computation device (CPU/GPU)
-    device = "mps"  # Computation device (CPU/GPU)
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
 
     # Set networks to training mode
     actor.to(device)
