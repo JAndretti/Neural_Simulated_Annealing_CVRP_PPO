@@ -1,0 +1,60 @@
+# =============== Project & Logging ===============
+PROJECT: "Neural_Simulated_Annealing"
+GROUP: "baseline_methods"          # Experiment group
+LOG: False                     # Enable WandB logging
+
+# =============== Hardware & Setup ===============
+DEVICE: "cpu"              # cpu/cuda/mps
+SEED: 42                   # Random seed
+
+# =============== CVRP Problem ===============
+PROBLEM_DIM: 100               # Number of nodes
+MAX_LOAD: 50                   # Vehicle capacity
+N_PROBLEMS: 256                # Parallel instances
+CLUSTERING: False              # Enable clustering
+NB_CLUSTERS_MAX: 3             # Max clusters if enabled
+ALT_CLUSTERING: True           # Use Alternance clustering
+HEURISTIC: "insertion"           # Local search method
+MIX1: "swap"            # First local search method
+MIX2: "insertion"           # Second local search method
+INIT: "isolate"           # Initial solution method
+NORMALIZE_REWARD: False      # Normalize rewards
+CAPACITY_REWARD: True         # Reward for capacity usage
+CAPACITY_REWARD_FACTOR: 10   # Scaling factor for capacity reward
+UPDATE_METHOD: "free"   # Update method after heuristic
+CHANGE_INIT_METHOD: True  # Change initial method
+INIT_LIST : ["random", "isolate", "sweep", "Clark_and_Wright","nearest_neighbor"]  # Initial solution methods
+
+# =============== Model Architecture ===============
+ENTRY: 15                   # Input dimension  
+EMBEDDING_DIM: 32          # Embedding dimension
+NUM_H_LAYERS: 1             # Number of layers
+PAIRS: False                # Pair model 
+
+# =============== Training ===============
+N_EPOCHS: 1000              # Total training epochs
+LR: 0.001                 # Learning rate
+WEIGHT_DECAY: 0.001         # L2 regularization
+BATCH_SIZE: 512            # Training batch size
+NEG_REWARD: 0               # Negative reward for invalid solutions
+
+# =============== Simulated Annealing ===============
+INIT_TEMP: 1              # Starting temperature
+STOP_TEMP: 0.1                # Final temperature
+OUTER_STEPS: 200            # Temperature steps
+INNER_STEPS: 1             # Steps per temperature
+SCHEDULER: "step"           # Cooling schedule
+METROPOLIS: True            # Use Metropolis criterion
+
+# =============== PPO Algorithm ===============
+METHOD: "ppo"              # Training algorithm
+PPO_EPOCHS: 10              # PPO optimization steps
+TRACE_DECAY: 0.99           # GAE lambda parameter
+EPS_CLIP: 0.25             # Policy clip range
+LOSS: "min_cost"           # Optimization objective
+REWARD: "immediate"       # Reward calculation
+GAMMA: 0.99                 # Discount factor
+# N_STEP: 100                 # Multi-step returns
+ENT_COEF: 0.01             # Entropy coefficient
+TARGET_KL: 0.01            # Target KL divergence
+GP_LAMBDA: 0.01            # Gradient penalty weight

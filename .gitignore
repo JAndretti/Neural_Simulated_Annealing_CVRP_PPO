@@ -1,0 +1,48 @@
+# Python cache files
+__pycache__/
+
+# Environment and system files
+.venv/
+.DS_store
+
+# Model and logs 
+wandb/
+
+# Profiling files
+profiling/
+*.prof
+
+# Temporary and test files
+*tmp*
+
+# key file
+*key.txt
+
+# Res files
+/res/**
+!/res/Vrp-Set-XML100_res.csv
+!/res/*.png
+
+# Generated problem files
+/generated_problem/**
+!/generated_problem/*.py
+!/generated_problem/scripts_gen/
+!/generated_problem/gen50.pt
+!/generated_problem/gen100.pt
+!/generated_problem/scripts_gen/generate_sh.py
+!/generated_problem/or_tools_gen*.csv
+!/generated_problem/*.zip
+!/generated_problem/README.md
+
+# BDD files
+bdd/*
+!bdd/README.md
+!bdd/generate_csv_data.py
+
+
+
+
+
+
+
+generated_problem/gen1000.pt

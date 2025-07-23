@@ -1,0 +1,29 @@
+[project]
+name = "nsa-cvrp-ppo"
+version = "0.1.0"
+description = "A Python package for solving the Capacitated Vehicle Routing Problem (CVRP) using Proximal Policy Optimization (PPO)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "glob2>=0.7",
+    "ipykernel>=6.29.5",
+    "kaleido>=1.0.0",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.1",
+    "nbformat>=4.2.0",
+    "numpy>=2.2.4",
+    "ortools>=9.12.4544",
+    "pandas>=2.2.3",
+    "plotly>=6.1.2",
+    "pyyaml>=6.0.2",
+    "rich>=14.0.0",
+    "scikit-learn>=1.6.1",
+    "scipy>=1.15.2",
+    "seaborn>=0.13.2",
+    "snakeviz>=2.2.2",
+    "torch>=2.6.0",
+    "torch-geometric>=2.6.1",
+    "tqdm>=4.67.1",
+    "vrplib>=1.5.1",
+    "wandb>=0.19.9",
+]

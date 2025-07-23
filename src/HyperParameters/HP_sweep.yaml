@@ -1,0 +1,10 @@
+# =============== Hyperparameter Sweep ===============
+LOG: 
+- True 
+
+GROUP: 
+- "baseline_methods_2"
+
+UPDATE_METHOD: 
+- "rm_depot"
+- "free"
