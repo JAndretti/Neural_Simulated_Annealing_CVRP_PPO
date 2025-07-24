@@ -36,6 +36,13 @@ class _HP:
         """Method for getting the keys of the configuration file"""
         return self.config.keys()
 
+    def get(self, key, default=None):
+        """Method for getting a value from the configuration file with a default"""
+        try:
+            return self.config[key]
+        except KeyError:
+            return default
+
     def values(self):
         """Method for getting the values of the configuration file"""
         return self.config.values()

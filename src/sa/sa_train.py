@@ -87,6 +87,7 @@ def sa_train(
     record_state: bool = False,
     replay_buffer=None,
     train: bool = False,
+    device: str = None,
     desc_tqdm: str = "Simulated Annealing Progress",
 ) -> Dict[str, torch.Tensor]:
     """
@@ -126,7 +127,8 @@ def sa_train(
         - reward: Computed rewards
         - temperature: Temperature schedule
     """
-    device = initial_solution.device
+    if device is None:
+        device = initial_solution.device
 
     # Set up cooling schedule
     scheduler = Scheduler(

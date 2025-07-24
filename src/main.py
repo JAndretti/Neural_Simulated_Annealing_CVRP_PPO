@@ -234,11 +234,12 @@ def main(cfg: dict) -> None:
     problem.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
 
     dim_test = 100
+    n_test_pb = 10000  # Number of test problems 10000 MAX
     path = f"generated_problem/gen{dim_test}.pt"
     bdd = torch.load(path, map_location="cpu")
-    coords = bdd["node_coords"]
-    demands = bdd["demands"]
-    capacities = bdd["capacity"]
+    coords = bdd["node_coords"][:n_test_pb]
+    demands = bdd["demands"][:n_test_pb]
+    capacities = bdd["capacity"][:n_test_pb]
     problem_test = CVRP(
         dim_test,
         capacities.shape[0],  # Number of problems
@@ -255,9 +256,8 @@ def main(cfg: dict) -> None:
     init_cost = torch.mean(problem_test.cost(init_x_test))
     logger.info(
         "Test problem initialized with params: "
-        f"PROBLEM_DIM={100}, "
-        f"N_PROBLEMS={2000}, "
-        f"MAX_LOAD={50}, "
+        f"PROBLEM_DIM={dim_test}, "
+        f"N_PROBLEMS={n_test_pb}, "
         f"Initial cost: {init_cost.item():.3f}"
     )
 
@@ -355,6 +355,11 @@ def main(cfg: dict) -> None:
                     logger.info(
                         f"Clustering set to {problem.clustering} at epoch {epoch}"
                     )
+                    if problem.clustering:
+                        problem.nb_clusters_max = random.randint(
+                            2, cfg["NB_CLUSTERS_MAX"]
+                        )
+
             if cfg["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
                 cfg["INIT"] = cfg["INIT_LIST"][(epoch // 5) % len(cfg["INIT_LIST"])]
                 logger.info(f"Changed INIT method to {cfg['INIT']} at epoch {epoch}")

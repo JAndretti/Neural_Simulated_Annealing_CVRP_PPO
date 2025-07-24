@@ -12,7 +12,7 @@ PROBLEM_DIM: 100               # Number of nodes
 MAX_LOAD: 50                   # Vehicle capacity
 N_PROBLEMS: 256                # Parallel instances
 CLUSTERING: False              # Enable clustering
-NB_CLUSTERS_MAX: 3             # Max clusters if enabled
+NB_CLUSTERS_MAX: 10             # Max clusters if enabled
 ALT_CLUSTERING: True           # Use Alternance clustering
 HEURISTIC: "insertion"           # Local search method
 MIX1: "swap"            # First local search method

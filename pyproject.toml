@@ -5,10 +5,12 @@ description = "A Python package for solving the Capacitated Vehicle Routing Prob
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "ezodf>=0.3.2",
     "glob2>=0.7",
     "ipykernel>=6.29.5",
     "kaleido>=1.0.0",
     "loguru>=0.7.3",
+    "lxml>=6.0.0",
     "matplotlib>=3.10.1",
     "nbformat>=4.2.0",
     "numpy>=2.2.4",

@@ -224,8 +224,7 @@ class CVRP(Problem):
         else:
             raise ValueError("capacities must be either an int or a torch.Tensor")
         self.clustering = self.params["CLUSTERING"]
-        if self.clustering:
-            self.nb_clusters_max = self.params["NB_CLUSTERS_MAX"]
+        self.nb_clusters_max = self.params.get("NB_CLUSTERS_MAX", 3)
 
     def _set_demands_coords(self, coords: torch.Tensor, demands: torch.Tensor) -> None:
         """Set coordinates and demands for the problem if loaded problem."""

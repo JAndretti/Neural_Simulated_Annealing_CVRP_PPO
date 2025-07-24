@@ -2,6 +2,7 @@ import torch
 import random
 import numpy as np
 import math
+import os
 
 
 from ortools.constraint_solver import routing_enums_pb2
@@ -12,6 +13,21 @@ from problem import CVRP
 from HP import _HP, get_script_arguments
 from tqdm import tqdm
 import multiprocessing
+
+from loguru import logger  # Enhanced logging capabilities
+
+# Remove default logger
+logger.remove()
+# Add custom logger with colored output
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
+        "<blue>{file}:{line}</blue> | "  # File and line in blue
+        "<yellow>{message}</yellow>"  # Message in yellow
+    ),
+    colorize=True,
+)
 
 
 # Function to calculate Euclidean distance between two points
@@ -148,7 +164,8 @@ def solve_w_ortools(coord, distance_matrix, demand, or_tools_time, max_load, dim
     search_parameters.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
-    search_parameters.time_limit.FromSeconds(or_tools_time)
+    if or_tools_time > 0:
+        search_parameters.time_limit.FromSeconds(or_tools_time)
 
     # Solve the problem.
     solution = routing.SolveWithParameters(search_parameters)
@@ -163,7 +180,14 @@ def solve_w_ortools(coord, distance_matrix, demand, or_tools_time, max_load, dim
 
 def solve_instance(args):
     """Helper function to solve a single instance, for parallel processing."""
-    coord_tuple, demand_tensor, cfg_or_tools_time, cfg_max_load, cfg_or_dim = args
+    (
+        coord_tuple,
+        demand_tensor,
+        cfg_or_tools_time,
+        cfg_max_load,
+        cfg_or_dim,
+        instance_name,
+    ) = args
     coord_list = [tuple(row) for row in coord_tuple.tolist()]
     dist_matrix = compute_euclidean_distance_matrix(coord_list)
     solution, distance = solve_w_ortools(
@@ -174,20 +198,28 @@ def solve_instance(args):
         cfg_max_load,
         cfg_or_dim,
     )
-    return solution, distance
+    return solution, distance, instance_name
 
 
 def or_tools(params, cfg, mult_thread=False):
     # to do in if __name__ == '__main__':
-    num_cores = 35  # As specified by the user
 
     # Prepare arguments for each call to solve_instance
     args_list = [
-        (coord, demand, cfg["OR_TOOLS_TIME"], max_load, dimension)
-        for coord, demand, max_load, dimension in zip(
-            params["coords"], params["demands"], params["MAX_LOAD"], params["OR_DIM"]
+        (coord, demand, cfg["OR_TOOLS_TIME"], max_load, dimension, name)
+        for coord, demand, max_load, dimension, name in zip(
+            params["coords"],
+            params["demands"],
+            params["MAX_LOAD"],
+            params["OR_DIM"],
+            params["names"],
         )
     ]
+    logger.info(f"Number of instances to solve: {len(args_list)}")
+    num_cores = min(
+        os.cpu_count(), len(args_list)
+    )  # max utile selon machine + taille du batch
+    logger.info(f"Number of cores used for parallel processing: {num_cores}")
     if mult_thread:
         with multiprocessing.Pool(processes=num_cores) as pool:
             results = list(
@@ -200,11 +232,11 @@ def or_tools(params, cfg, mult_thread=False):
             )
 
         # Unzip results
-        solutions, distances = zip(*results)
+        solutions, distances, names = zip(*results)
     else:
-        solutions, distances = zip(*[solve_instance(args) for args in args_list])
+        solutions, distances, names = zip(*[solve_instance(args) for args in args_list])
 
-    return list(solutions), list(distances)
+    return list(solutions), list(distances), list(names)
 
 
 def main():
