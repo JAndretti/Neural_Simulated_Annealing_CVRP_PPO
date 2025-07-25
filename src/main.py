@@ -374,7 +374,7 @@ def main(cfg: dict) -> None:
                     critic_loss,
                     avg_actor_grad,
                     avg_critic_grad,
-                    test if (epoch != 0 and epoch > 10) else test_init,
+                    test if (epoch != 0 and epoch >= 10) else test_init,
                     epoch,
                     cfg,
                 )
