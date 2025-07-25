@@ -91,7 +91,7 @@ def log_training_and_test_metrics(
             # Improvement metrics
             "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
             # Search statistics
-            "Acceptance_rate": torch.mean(test["n_acc"]),
+            "Acceptance_rate": torch.mean(test["n_acc"]) / cfg["OUTER_STEPS"],
             "Step_best_cost": torch.mean(test["best_step"]) / cfg["OUTER_STEPS"],
             "Valid_percentage": torch.mean(test["is_valid"]),
             "Final_capacity_left": torch.mean(test["capacity_left"]),
@@ -233,8 +233,8 @@ def main(cfg: dict) -> None:
     problem.manual_seed(cfg["SEED"])
     problem.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
 
-    dim_test = 100
-    n_test_pb = 10000  # Number of test problems 10000 MAX
+    dim_test = cfg["TEST_DIMENSION"]
+    n_test_pb = cfg["TEST_NB_PROBLEMS"]  # Number of test problems
     path = f"generated_problem/gen{dim_test}.pt"
     bdd = torch.load(path, map_location="cpu")
     coords = bdd["node_coords"][:n_test_pb]
@@ -251,7 +251,11 @@ def main(cfg: dict) -> None:
     # Generate new problem instances
     params = problem_test.generate_params("test", True, coords, demands)
     problem_test.set_params(params)
-    init_x_test = problem_test.generate_init_x("nearest_neighbor")
+    if cfg["CHANGE_INIT_METHOD"]:
+        init_test = "isolate"
+    else:
+        init_test = cfg["INIT"]
+    init_x_test = problem_test.generate_init_x(init_test)
     problem_test.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
     init_cost = torch.mean(problem_test.cost(init_x_test))
     logger.info(

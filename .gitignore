@@ -18,6 +18,10 @@ profiling/
 # key file
 *key.txt
 
+# picture files
+*.png
+*.jpg
+
 # Res files
 /res/**
 !/res/Vrp-Set-XML100_res.csv
@@ -38,11 +42,4 @@ profiling/
 bdd/*
 !bdd/README.md
 !bdd/generate_csv_data.py
-
-
-
-
-
-
-
-generated_problem/gen1000.pt
+res/boxplot_comparison.png

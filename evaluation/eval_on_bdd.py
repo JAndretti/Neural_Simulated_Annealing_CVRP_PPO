@@ -2,6 +2,7 @@ import vrplib
 import pandas as pd
 import torch
 import numpy as np
+import tqdm
 from loguru import logger  # Enhanced logging capabilities
 from func import init_problem_parameters, set_seed, load_model, init_pb
 
@@ -12,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "s
 
 from sa import sa_train
 from model import CVRPActorPairs, CVRPActor
-import os
+from or_tools import compute_euclidean_distance_matrix
 
 # Remove default logger
 logger.remove()
@@ -29,7 +30,7 @@ logger.add(
 
 # TO FILL
 ###########################################################################
-MODEL = "20250630_225812_yhajndhh"
+MODEL = "20250630_165952_txdtlez8"
 cfg = {
     "PROBLEM_DIM": 100,
     "N_PROBLEMS": 10000,
@@ -39,11 +40,15 @@ cfg = {
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    "INIT": "sweep",
+    "INIT": "Clark_and_Wright",
     "SEED": 0,
     "LOAD_PB": True,
 }
+BASELINE = True  # If True, use the baseline data
 ###########################################################################
+
+if BASELINE:
+    logger.info("Running in baseline mode.")
 
 PATH = "wandb/Neural_Simulated_Annealing/"
 
@@ -112,6 +117,14 @@ def calculate_distance(
     return total_distances
 
 
+def calculate_dist_route(route, distance_matrix):
+    """Calculate the total distance of a given route."""
+    total_distance = 0
+    for i in range(len(route) - 1):
+        total_distance += distance_matrix[route[i]][route[i + 1]]
+    return total_distance
+
+
 if __name__ == "__main__":
     logger.info("Starting evaluation script...")
     # Set seed for reproducibility
@@ -131,15 +144,20 @@ if __name__ == "__main__":
     demands = []
     depots = []
     opt_costs = []
+    matrixes = []
 
     logger.info("Reading VRP instances...")
-    for instance_path in instances:
+    for instance_path in tqdm.tqdm(instances, leave=False, desc="Reading instances"):
         data = vrplib.read_instance(instance_path)
         name = data["name"]
         names.append(name)
         dimensions.append(data["dimension"])
         capacities.append(data["capacity"])
         node_coords.append(data["node_coord"])
+        matrix = compute_euclidean_distance_matrix(
+            [tuple(coord) for coord in data["node_coord"]]
+        )
+        matrixes.append(matrix)
         demands.append(data["demand"])
         depots.append(data["depot"])
     logger.info("Finished reading VRP instances.")
@@ -195,8 +213,9 @@ if __name__ == "__main__":
         init_x,
         CFG,
         replay_buffer=None,
-        baseline=False,
+        baseline=True if BASELINE else False,
         greedy=False,
+        device=CFG["DEVICE"],
     )
     final_cost = torch.mean(test["min_cost"])
     logger.info(f"Simulated annealing completed. Final cost: {final_cost:.4f}")
@@ -204,13 +223,14 @@ if __name__ == "__main__":
     solutions = test["best_x"].cpu().detach()
 
     # Calculate distances using the solutions and non-normalized node coordinates
-    distances = calculate_distance(solutions, node_coords_tensor)
-    logger.info(f"Calculated distances: {distances}")
+    distances = []
+    for sol, dist_mat in zip(solutions, matrixes):
+        distances.append(calculate_dist_route(sol.squeeze().numpy(), dist_mat))
 
     tmp_df = pd.DataFrame(
         {
             "name": names,
-            FOLDER + MODEL: distances,
+            FOLDER + MODEL if not BASELINE else "Baseline": distances,
         }
     )
 

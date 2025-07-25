@@ -54,7 +54,7 @@ git clone https://github.com/JAndretti/Neural_Simulated_Annealing_CVRP_PPO.git
 cd Neural_Simulated_Annealing_CVRP_PPO
 ```
 2. Install dependencies and setup project:  
-If you want to download the database change **DOWNLOAD_DB = False** to **True**, not mandatory since in the folder *bdd* you can find *bdd.pkl* with all important data extract from the BDD.
+If you want to download the database change **DOWNLOAD_DB = False** to **True**
 ```bash
 uv run settings.py
 ```

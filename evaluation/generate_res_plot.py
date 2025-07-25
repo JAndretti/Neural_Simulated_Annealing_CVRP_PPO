@@ -4,22 +4,16 @@ import matplotlib.pyplot as plt
 OR_TOOLS_OPT_COST_PATH = "res/Vrp-Set-XML100_res.csv"
 MODEL_RES_PATH = "res/models_res_on_bdd.csv"
 
-# Noms lisibles pour la légende
-NAMES = [
-    "opt_sol",
-    "or_tools_60",
-    "Échantillonnage par rejet",
-    "Reconstruction heuristique",
-    "Baseline SA",
-]
-
-DISPLAY_NAMES = [
-    "Solution optimale",
-    "OR-Tools 60sec",
-    "Échant. par rejet",
-    "Reconstruction heur.",
-    "SA baseline",
-]
+DISPLAY_NAMES = None
+# Names of the methods to be displayed in the boxplot
+# if you want special names
+# DISPLAY_NAMES = [
+#     "Solution optimale",
+#     "OR-Tools 60sec",
+#     "Échant. par rejet",
+#     "Reconstruction heur.",
+#     "SA baseline",
+# ]
 
 COLORS = [
     "#1f77b4",
@@ -27,6 +21,21 @@ COLORS = [
     "#2ca02c",
     "#ff7f0e",
     "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+    "#aec7e8",
+    "#ffbb78",
+    "#98df8a",
+    "#ff9896",
+    "#c5b0d5",
+    "#c49c94",
+    "#f7b6d2",
+    "#c7c7c7",
+    "#dbdb8d",
+    "#9edae5",
 ]  # Couleurs pour chaque méthode
 
 
@@ -40,10 +49,11 @@ def read_csv_file(file_path):
 
 if __name__ == "__main__":
     df1 = read_csv_file(OR_TOOLS_OPT_COST_PATH)
-    if "or_tools_1" in df1.columns:
-        df1 = df1.drop(columns=["or_tools_1"])
     df2 = read_csv_file(MODEL_RES_PATH)
     NAMES = df1.columns.tolist()[1:] + df2.columns.tolist()[1:]
+    names_tmp = [name.split("/")[-1] for name in NAMES]
+    if DISPLAY_NAMES is None:
+        DISPLAY_NAMES = names_tmp
 
     if df1 is not None and df2 is not None:
         df = pd.merge(df1, df2, on="name", how="outer")
@@ -63,7 +73,7 @@ if __name__ == "__main__":
         )
 
         # Couleur de chaque boîte
-        for patch, color in zip(box["boxes"], COLORS):
+        for patch, color in zip(box["boxes"], COLORS[: len(NAMES)]):
             patch.set_facecolor(color)
             patch.set_alpha(0.6)
             patch.set_linewidth(1.5)

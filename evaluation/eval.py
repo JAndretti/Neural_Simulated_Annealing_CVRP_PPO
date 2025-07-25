@@ -39,8 +39,8 @@ warnings.filterwarnings("ignore")
 # TO FILL
 ###########################################################################
 FOLDER = "baseline_methods_2"
-rapid = False  # Set to True for faster execution, False for full evaluation
-dim = 500  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
+rapid = True  # Set to True for faster execution, False for full evaluation
+dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
 
 if dim not in [50, 100, 500, 1000]:
@@ -79,7 +79,7 @@ else:
 cfg = {
     "PROBLEM_DIM": 100 if rapid else coords.shape[1] - 1,
     "N_PROBLEMS": 1000 if rapid else capacities.shape[0],
-    "OUTER_STEPS": 2000 if rapid else 20000,
+    "OUTER_STEPS": 2000 if rapid else 10000,
     "MAX_LOAD": 50,
     "DEVICE": (
         "cuda"

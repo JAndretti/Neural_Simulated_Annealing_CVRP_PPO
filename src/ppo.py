@@ -8,6 +8,26 @@ from tqdm import tqdm  # Progress bar for iterations
 from model import SAModel
 from replay import ReplayBuffer, Transition
 
+# Remove default logger
+logger.remove()
+# Add custom logger with colored output
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
+        "<blue>{file}:{line}</blue> | "  # File and line in blue
+        "<yellow>{message}</yellow>"  # Message in yellow
+    ),
+    colorize=True,
+)
+
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
+logger.info(f"PPO epochs will use device: {DEVICE}")
+
 
 def gradient_penalty(critic, states):
     """
@@ -214,11 +234,7 @@ def ppo(
     problem_dim = pb_dim
     gamma = cfg["GAMMA"]  # Discount factor for future rewards
     device = cfg["DEVICE"]  # Computation device (CPU/GPU)
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
-    )
+    device = DEVICE
 
     # Set networks to training mode
     actor.to(device)
