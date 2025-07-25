@@ -260,7 +260,7 @@ def ppo(
             (gammas_tensor == 0)
             .float()
             .unsqueeze(-1)
-            .repeat((1, 256))  # .view(nt, n_problems)
+            .repeat((1, n_problems))  # .view(nt, n_problems)
         )  # Size [nt, n_problems]
 
         # Prepare other tensors. The .view(nt, n_problems, ...) is more direct.
