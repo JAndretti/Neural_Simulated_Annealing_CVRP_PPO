@@ -44,7 +44,7 @@ cfg = {
     "SEED": 0,
     "LOAD_PB": True,
 }
-BASELINE = True  # If True, use the baseline data
+BASELINE = False  # If True, eval on baseline method, else on the model
 ###########################################################################
 
 if BASELINE:
