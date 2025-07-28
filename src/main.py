@@ -356,9 +356,10 @@ def main(cfg: dict) -> None:
                 # Inverse clustering flag for next 10 epoch
                 if cfg["ALT_CLUSTERING"]:
                     problem.clustering = not problem.clustering
-                    logger.info(
-                        f"Clustering set to {problem.clustering} at epoch {epoch}"
-                    )
+                    if cfg["VERBOSE"]:
+                        logger.info(
+                            f"Clustering set to {problem.clustering} at epoch {epoch}"
+                        )
                     if problem.clustering:
                         problem.nb_clusters_max = random.randint(
                             2, cfg["NB_CLUSTERS_MAX"]
@@ -366,7 +367,10 @@ def main(cfg: dict) -> None:
 
             if cfg["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
                 cfg["INIT"] = cfg["INIT_LIST"][(epoch // 5) % len(cfg["INIT_LIST"])]
-                logger.info(f"Changed INIT method to {cfg['INIT']} at epoch {epoch}")
+                if cfg["VERBOSE"]:
+                    logger.info(
+                        f"Changed INIT method to {cfg['INIT']} at epoch {epoch}"
+                    )
             # Logging
             if cfg["LOG"]:
                 log_training_and_test_metrics(
@@ -395,10 +399,11 @@ def main(cfg: dict) -> None:
             if epoch % 10 == 0:
                 if train_loss.item() >= early_stop_value:
                     early_stopping_counter += 1
-                    logger.info(
-                        f"Epoch {epoch}: Early stopping counter: "
-                        f"{early_stopping_counter}"
-                    )
+                    if cfg["VERBOSE"]:
+                        logger.info(
+                            f"Epoch {epoch}: Early stopping counter: "
+                            f"{early_stopping_counter}"
+                        )
                 else:
                     early_stopping_counter = 0
                     early_stop_value = min(train_loss.item(), early_stop_value)

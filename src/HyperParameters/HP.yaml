@@ -2,6 +2,7 @@
 PROJECT: "Neural_Simulated_Annealing"  # Project name
 GROUP: "baseline_methods"              # Experimentation group
 LOG: False                             # Enable or disable logging with WandB
+VERBOSE: False                          # Verbose output during training
 
 # =============== Hardware & Setup ===============
 DEVICE: "cpu"                          # Hardware used: cpu, cuda, or mps
