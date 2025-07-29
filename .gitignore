@@ -19,8 +19,8 @@ profiling/
 *key.txt
 
 # picture files
-*.png
-*.jpg
+**.png
+**.jpg
 
 # Res files
 /res/**
