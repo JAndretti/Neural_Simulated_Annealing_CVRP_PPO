@@ -16,6 +16,8 @@ from heur_init import (
     generate_Clark_and_Wright,
     generate_nearest_neighbor,
     construct_cvrp_solution,
+    cheapest_insertion,
+    path_cheapest_arc,
 )
 
 
@@ -474,18 +476,17 @@ class CVRP(Problem):
         Returns:
             Solution with swapped nodes
         """
-        new_solution = solution.clone()
         batch_idx = torch.arange(solution.size(0))[:, None]
         idx1, idx2 = indices[:, 0, None].to(torch.int64), indices[:, 1, None].to(
             torch.int64
         )
 
         # Perform swap
-        temp = new_solution[batch_idx, idx1].clone()
-        new_solution[batch_idx, idx1] = new_solution[batch_idx, idx2]
-        new_solution[batch_idx, idx2] = temp
+        temp = solution[batch_idx, idx1]
+        solution[batch_idx, idx1] = solution[batch_idx, idx2]
+        solution[batch_idx, idx2] = temp
 
-        return new_solution
+        return solution
 
     def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -618,6 +619,10 @@ class CVRP(Problem):
             sol = generate_Clark_and_Wright(self).to(self.device)
         elif self.params["INIT"] == "nearest_neighbor":
             sol = generate_nearest_neighbor(self).to(self.device)
+        elif self.params["INIT"] == "cheapest_insertion":
+            sol = cheapest_insertion(self).to(self.device)
+        elif self.params["INIT"] == "path_cheapest_arc":
+            sol = path_cheapest_arc(self).to(self.device)
         else:
             raise ValueError(
                 f"Unsupported initialization method: {self.params['INIT']}"
@@ -724,8 +729,7 @@ class CVRP(Problem):
         route_ids = torch.cumsum(route_starts, dim=1) - 1  # [batch, route_length]
 
         # Mask depot positions so they don't contribute to demand sums
-        valid_route_ids = route_ids.clone()
-        valid_route_ids[~mask] = -1
+        route_ids[~mask] = -1
 
         # Compute total demand per route
         max_routes = route_ids.max().item() + 1 if route_ids.numel() > 0 else 0
@@ -735,7 +739,7 @@ class CVRP(Problem):
         )
 
         route_demands.scatter_add_(
-            1, torch.clamp(valid_route_ids, min=0), demands.float() * mask.float()
+            1, torch.clamp(route_ids, min=0), demands.float() * mask.float()
         )
 
         # Calculate utilization ratio for each route (demand / capacity)
@@ -778,8 +782,7 @@ class CVRP(Problem):
         route_ids = torch.cumsum(route_starts, dim=1) - 1  # [batch, route_length]
 
         # Set depot positions to -1 so they don't contribute to route sums
-        valid_route_ids = route_ids.clone()
-        valid_route_ids[~mask] = -1  # depot positions
+        route_ids[~mask] = -1  # depot positions
 
         # Compute route demand sums (scatter_add)
         max_routes = route_ids.max().item() + 1 if route_ids.numel() > 0 else 0
@@ -788,9 +791,7 @@ class CVRP(Problem):
             batch_size, max_routes, dtype=torch.int64, device=device
         )
 
-        route_demands.scatter_add_(
-            1, torch.clamp(valid_route_ids, min=0), demands * mask
-        )
+        route_demands.scatter_add_(1, torch.clamp(route_ids, min=0), demands * mask)
 
         # Check if any route demand exceeds capacity
         feasible = (route_demands <= self.capacity).all(dim=1)

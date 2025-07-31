@@ -478,7 +478,7 @@ def generate_Clark_and_Wright(cvrp_instance):
     client_route = [{i + 1: i for i in range(dim)} for _ in range(batch_size)]
 
     # Try to merge routes according to savings
-    for b in tqdm(range(batch_size), desc="Processing batches", leave=False):
+    for b in tqdm(range(batch_size), desc="Clark and Wright Init", leave=False):
         for k in range(dim * dim):
             i = i_idx[b, k].item()
             j = j_idx[b, k].item()
@@ -539,3 +539,263 @@ def generate_Clark_and_Wright(cvrp_instance):
             flat[:max_route_len], dtype=torch.long
         )
     return batch_routes.unsqueeze(-1)
+
+
+def cheapest_insertion(cvrp_instance):
+    """
+    Vectorized implementation of the Cheapest Insertion algorithm for the CVRP.
+
+    Args:
+        cvrp_instance: An instance of the CVRP class containing problem data
+
+    Returns:
+        routes: tensor of shape [batch_size, solution_length] containing the routes
+    """
+
+    batch_size = cvrp_instance.n_problems
+    n_clients = cvrp_instance.dim
+    n_total = n_clients + 1  # Including depot
+    distance_matrix = cvrp_instance.matrix.cpu()
+    demand = cvrp_instance.demands.cpu()
+    vehicle_capacity = cvrp_instance.capacity.squeeze(-1).cpu()
+    device = "cpu"
+
+    # Initialization: for each problem, start with an empty route [0, 0]
+    routes = [
+        torch.tensor([0, 0], dtype=torch.long, device=device) for _ in range(batch_size)
+    ]
+    remaining_clients = (
+        torch.arange(1, n_clients + 1, device=device)
+        .unsqueeze(0)
+        .expand(batch_size, -1)
+    )
+    current_load = torch.zeros(batch_size, device=device)
+
+    # Mask to track which clients have been inserted
+    inserted = torch.zeros((batch_size, n_total), dtype=torch.bool, device=device)
+    inserted[:, 0] = True  # The depot is always inserted
+
+    while True:
+        # Find clients not yet inserted
+        not_inserted = ~inserted
+        not_inserted[:, 0] = False  # Ignore the depot
+
+        # If all clients are inserted, we are done
+        if not_inserted.sum().item() == 0:
+            break
+
+        # For each problem in the batch
+        for b in range(batch_size):
+            if not_inserted[b].sum().item() == 0:
+                continue  # All clients are already inserted for this problem
+
+            best_cost = float("inf")
+            best_position = -1
+            best_client = -1
+
+            # Find all possible positions for insertion
+            depot_positions = (routes[b] == 0).nonzero().flatten()
+
+            for i in range(len(depot_positions) - 1):
+                start_idx = depot_positions[i]
+                end_idx = depot_positions[i + 1]
+                subroute = routes[b][start_idx : end_idx + 1]
+
+                # Calculate the current demand of this subroute
+                route_demand = (
+                    demand[b, subroute[1:-1]].sum() if len(subroute) > 2 else 0
+                )
+                remaining_capacity = vehicle_capacity[b] - route_demand
+
+                # Find eligible clients for this route
+                eligible_clients = remaining_clients[b][
+                    (demand[b, remaining_clients[b]] <= remaining_capacity)
+                    & not_inserted[b, remaining_clients[b]]
+                ]
+
+                if len(eligible_clients) == 0:
+                    continue
+
+                # For each pair of consecutive nodes in the subroute
+                for k in range(len(subroute) - 1):
+                    u = subroute[k]
+                    v = subroute[k + 1]
+
+                    # Calculate the insertion cost for each eligible client
+                    delta = (
+                        distance_matrix[b, u, eligible_clients]
+                        + distance_matrix[b, eligible_clients, v]
+                        - distance_matrix[b, u, v]
+                    )
+
+                    # Find the best client for this insertion
+                    min_delta, min_idx = delta.min(dim=0)
+                    if min_delta < best_cost:
+                        best_cost = min_delta.item()
+                        best_client = eligible_clients[min_idx].item()
+                        best_position = start_idx + k + 1
+
+            # If no insertion is possible in existing routes, create a new route
+            if best_cost == float("inf"):
+                # Find the closest uninserted client to the depot
+                eligible = remaining_clients[b][not_inserted[b, remaining_clients[b]]]
+                if len(eligible) == 0:
+                    continue
+
+                depot_dist = distance_matrix[b, 0, eligible]
+                _, closest_idx = depot_dist.min(dim=0)
+                best_client = eligible[closest_idx].item()
+
+                # Find the position after the last 0
+                last_zero_pos = (routes[b] == 0).nonzero()[-1].item()
+                routes[b] = torch.cat(
+                    [
+                        routes[b][: last_zero_pos + 1],
+                        torch.tensor([best_client, 0], device=device),
+                        routes[b][last_zero_pos + 1 :],
+                    ]
+                )
+                inserted[b, best_client] = True
+                current_load[b] = demand[b, best_client]
+            else:
+                # Insert the best client found
+                routes[b] = torch.cat(
+                    [
+                        routes[b][:best_position],
+                        torch.tensor([best_client], device=device),
+                        routes[b][best_position:],
+                    ]
+                )
+                inserted[b, best_client] = True
+                current_load[b] += demand[b, best_client]
+
+    # Convert the list of routes into a single tensor with padding if necessary
+    max_len = max(len(r) for r in routes) + int(n_clients * MULT)
+    padded_routes = torch.zeros((batch_size, max_len), dtype=torch.long, device=device)
+    for b in range(batch_size):
+        padded_routes[b, : len(routes[b])] = routes[b]
+
+    return padded_routes.unsqueeze(-1)
+
+
+def path_cheapest_arc(cvrp_instance):
+    """
+    Implementation of the Path Cheapest Arc for the CVRP with strict constraints.
+
+    Args:
+        cvrp_instance: An instance of the CVRP class containing problem data
+
+    Returns:
+        routes: tensor [batch_size, max_len] (sequence of type [0,1,2,0,3,4,0,...])
+    """
+    batch_size = cvrp_instance.n_problems
+    n_clients = cvrp_instance.dim
+    n_total = n_clients + 1  # Including depot
+    distance_matrix = cvrp_instance.matrix.cpu()
+    demand = cvrp_instance.demands.cpu()
+    vehicle_capacity = cvrp_instance.capacity.squeeze(-1).cpu()
+    device = "cpu"
+
+    # Initialization
+    routes = [
+        torch.tensor([0], dtype=torch.long, device=device) for _ in range(batch_size)
+    ]
+    remaining_clients = (
+        torch.arange(1, n_clients + 1, device=device)
+        .unsqueeze(0)
+        .expand(batch_size, -1)
+    )
+    inserted = torch.zeros((batch_size, n_total), dtype=torch.bool, device=device)
+    inserted[:, 0] = True
+
+    while True:
+        # Check if all clients are inserted
+        not_inserted = ~inserted
+        not_inserted[:, 0] = False  # Ignore the depot
+        if not_inserted.sum() == 0:
+            break
+
+        for b in range(batch_size):
+            if not_inserted[b].sum() == 0:
+                continue
+
+            best_cost = float("inf")
+            best_client = -1
+            best_pos = -1
+            new_route_needed = True
+
+            # Calculate the used capacity in each existing sub-route
+            route = routes[b]
+            depot_positions = (route == 0).nonzero().flatten()
+
+            for i in range(len(depot_positions) - 1):
+                start, end = depot_positions[i], depot_positions[i + 1]
+                subroute = route[start : end + 1]
+
+                # Calculate the current demand
+                current_demand = (
+                    demand[b, subroute[1:-1]].sum() if len(subroute) > 2 else 0
+                )
+                remaining_cap = vehicle_capacity[b] - current_demand
+
+                # Eligible clients for this sub-route
+                eligible = remaining_clients[b][
+                    (demand[b, remaining_clients[b]] <= remaining_cap)
+                    & not_inserted[b, remaining_clients[b]]
+                ]
+
+                if len(eligible) == 0:
+                    continue
+
+                # Find the best arc for insertion
+                for j in range(len(subroute) - 1):
+                    u, v = subroute[j], subroute[j + 1]
+                    delta = (
+                        distance_matrix[b, u, eligible]
+                        + distance_matrix[b, eligible, v]
+                        - distance_matrix[b, u, v]
+                    )
+                    min_delta, min_idx = delta.min(dim=0)
+
+                    if min_delta < best_cost:
+                        best_cost = min_delta.item()
+                        best_client = eligible[min_idx].item()
+                        best_pos = start + j + 1
+                        new_route_needed = False
+
+            # Handle new routes if necessary
+            if new_route_needed:
+                eligible = remaining_clients[b][not_inserted[b, remaining_clients[b]]]
+                if len(eligible) == 0:
+                    continue
+
+                # Choose the closest client to the depot
+                depot_dists = distance_matrix[b, 0, eligible]
+                _, closest_idx = depot_dists.min(dim=0)
+                best_client = eligible[closest_idx].item()
+
+                # Add new route [0, client, 0]
+                if routes[b][-1] != 0:
+                    routes[b] = torch.cat([routes[b], torch.tensor([0], device=device)])
+                routes[b] = torch.cat(
+                    [routes[b], torch.tensor([best_client, 0], device=device)]
+                )
+            else:
+                # Insert the client at the optimal position
+                routes[b] = torch.cat(
+                    [
+                        routes[b][:best_pos],
+                        torch.tensor([best_client], device=device),
+                        routes[b][best_pos:],
+                    ]
+                )
+
+            inserted[b, best_client] = True
+
+    # Padding for uniform output format
+    max_len = max(len(r) for r in routes) + int(n_clients * MULT)
+    padded_routes = torch.zeros((batch_size, max_len), dtype=torch.long, device=device)
+    for b in range(batch_size):
+        padded_routes[b, : len(routes[b])] = routes[b]
+
+    return padded_routes.unsqueeze(-1)  # Add dimension for compatibility

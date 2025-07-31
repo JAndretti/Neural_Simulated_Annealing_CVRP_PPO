@@ -3,8 +3,7 @@ LOG:
 - True 
 
 GROUP: 
-- "baseline_methods_2"
+- "INIT_METHODS"
 
-UPDATE_METHOD: 
-- "rm_depot"
-- "free"
+CHANGE_INIT_METHOD: 
+- True  

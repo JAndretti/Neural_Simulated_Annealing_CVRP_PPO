@@ -43,7 +43,15 @@ if __name__ == "__main__":
         "CLUSTERING": False,
         "NB_CLUSTERS_MAX": 0,
     }
-    methods = ["sweep", "random", "isolate", "nearest_neighbor", "Clark_and_Wright"]
+    methods = [
+        "sweep",
+        "random",
+        "isolate",
+        "nearest_neighbor",
+        "Clark_and_Wright",
+        "cheapest_insertion",
+        "path_cheapest_arc",
+    ]
     res = []
     times = []
     problem = init_pb(cfg)
@@ -60,15 +68,31 @@ if __name__ == "__main__":
         times.append(end_time - start_time)
 
     # Plot the results
-    colors = ["lightsalmon", "skyblue", "lightgreen", "salmon", "lightcoral", "pink"]
-    plt.figure(figsize=(14, 12))
-    plt.bar(methods, res, label=methods, color=colors)
+    colors = [
+        "lightsalmon",
+        "skyblue",
+        "lightgreen",
+        "salmon",
+        "lightcoral",
+        "pink",
+        "lightyellow",
+        "lightgray",
+    ]
+    plt.figure(figsize=(10, 6))
+    plt.bar(methods, res, color=colors, edgecolor="black", alpha=0.7)
     for i, method in enumerate(methods):
-        plt.text(i, res[i] + 0.5, f"{times[i]:.2f}s", ha="center", fontsize=14)
-    plt.yticks(fontsize=16)
-    plt.title("Comparison of Initialization Methods", fontsize=20)
-    plt.legend(title="Initialization Method", fontsize=14, title_fontsize=16)
-    plt.xticks([])
-    plt.ylabel("Average Cost", fontsize=16)
-    # plt.xticks(rotation=45)
-    plt.savefig("plots/init_methods_comparison.png")
+        plt.text(
+            i, res[i] + 0.5, f"{res[i]:.2f}", ha="center", fontsize=12, color="black"
+        )
+        plt.text(
+            i, res[i] - 4, f"{times[i]:.2f}s", ha="center", fontsize=10, color="gray"
+        )
+    plt.yticks(fontsize=12)
+    plt.xticks(fontsize=12, rotation=45, ha="right")
+    plt.title("Comparison of Initialization Methods", fontsize=16, fontweight="bold")
+    plt.xlabel("Initialization Method", fontsize=14)
+    plt.ylabel("Average Cost", fontsize=14)
+    plt.grid(axis="y", linestyle="--", alpha=0.6)
+    plt.tight_layout()
+    plt.savefig("plots/init_methods_comparison.png", dpi=300)
+    plt.show()

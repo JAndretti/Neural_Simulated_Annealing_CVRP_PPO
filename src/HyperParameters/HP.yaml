@@ -19,14 +19,14 @@ NB_CLUSTERS_MAX: 10                    # Maximum number of clusters if clusterin
 ALT_CLUSTERING: True                   # Use alternate clustering during training
 
 # =============== Heuristic & Initial Solution ===============
-HEURISTIC: "insertion"                 # Local search method
+HEURISTIC: "swap"                 # Local search method
 MIX1: "swap"                           # First local search method if HEURISTIC is "mix"
 MIX2: "insertion"                      # Second local search method if HEURISTIC is "mix"
 
-INIT: "isolate"                        # Initial solution method
+INIT: "nearest_neighbor"                        # Initial solution method
 UPDATE_METHOD: "free"                  # Update method after heuristic
-CHANGE_INIT_METHOD: True               # Change initial method during training
-INIT_LIST: ["random","isolate","sweep","Clark_and_Wright","nearest_neighbor"]                          # List of initial solution methods
+CHANGE_INIT_METHOD: False               # Change initial method during training
+INIT_LIST: ["random","isolate","sweep","Clark_and_Wright","nearest_neighbor", "cheapest_insertion", "path_cheapest_arc"]                          # List of initial solution methods
 
 # =============== Reward ===============
 NORMALIZE_REWARD: False                # Normalize rewards
