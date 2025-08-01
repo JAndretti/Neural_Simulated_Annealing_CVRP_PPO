@@ -40,7 +40,6 @@ if __name__ == "__main__":
         "INNER_STEPS": 1,
         "METROPOLIS": True,
         "UPDATE_METHOD": "free",
-        "DEVICE": "mps",
         "SEED": 0,
         "HEURISTIC": "insertion",
         "MIX1": "",
@@ -63,93 +62,134 @@ if __name__ == "__main__":
         "NEG_REWARD": 0,
         "NORMALIZE_REWARD": True,
     }
+    gpu = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else None
+    )
+    results_time_cpu = []
+    results_cost_cpu = []
+    results_time_model_cpu = []
+    results_cost_model_cpu = []
+    results_time_gpu = []
+    results_cost_gpu = []
+    results_time_model_gpu = []
+    results_cost_model_gpu = []
+    # for device in [gpu, "cpu"]:
+    for device in [gpu]:
+        if device is None:
+            continue
+        cfg["DEVICE"] = device
+        logger.info(f"Using device: {cfg['DEVICE']}")
+        problem, init_x, initial_cost = init_pb(cfg)
 
-    problem, init_x, initial_cost = init_pb(cfg)
+        OUTER_STEPS = [100, 1000, 5000, 10000, 20000, 50000]
+        results_time = []
+        results_cost = []
+        results_time_model = []
+        results_cost_model = []
+        for outer_steps in tqdm(
+            OUTER_STEPS,
+            desc="Processing OUTER_STEPS for device: {}\n".format(device),
+            leave=True,
+        ):
+            if device == "cpu" and outer_steps > 10000:
+                logger.warning(
+                    f"Skipping OUTER_STEPS={outer_steps} for CPU due to performance "
+                    "concerns."
+                )
+                continue
+            cfg["OUTER_STEPS"] = outer_steps
+            logger.info(f"Running SA baseline with OUTER_STEPS={outer_steps}")
+            start_time = time.time()
+            dict_solution = sa_baseline(problem, init_x, cfg)
+            end_time = time.time()
+            final_cost = torch.mean(dict_solution["min_cost"]).item()
+            results_cost.append(final_cost)
+            results_time.append(end_time - start_time)
+            logger.info(
+                f"OUTER_STEPS: {outer_steps}, Final Cost: {final_cost}, "
+                f"Time: {end_time - start_time:.2f} seconds"
+            )
+            actor = CVRPActor(
+                cfg["EMBEDDING_DIM"],
+                cfg["ENTRY"],
+                num_hidden_layers=cfg["NUM_H_LAYERS"],
+                device=cfg["DEVICE"],
+                mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
+                method=cfg["UPDATE_METHOD"],
+            )
+            logger.info(f"Running NSA with OUTER_STEPS={outer_steps}")
+            start_time = time.time()
+            dict_solution = sa_test(
+                actor,
+                problem,
+                init_x,
+                cfg,
+                replay_buffer=None,
+                baseline=False,
+                greedy=False,
+                desc_tqdm="NSA Model",
+            )
+            end_time = time.time()
+            final_cost = torch.mean(dict_solution["min_cost"]).item()
+            results_time_model.append(end_time - start_time)
+            results_cost_model.append(final_cost)
+            logger.info(
+                f"OUTER_STEPS: {outer_steps}, Final Cost: {final_cost}, "
+                f"Time: {end_time - start_time:.2f} seconds"
+            )
+        if cfg["DEVICE"] == "cpu":
+            results_time_cpu = results_time
+            results_cost_cpu = results_cost
+            results_time_model_cpu = results_time_model
+            results_cost_model_cpu = results_cost_model
+        else:
+            results_time_gpu = results_time
+            results_cost_gpu = results_cost
+            results_time_model_gpu = results_time_model
+            results_cost_model_gpu = results_cost_model
 
-    OUTER_STEPS = [100, 1000, 5000, 10000, 20000, 50000]
-    results_time = []
-    results_cost = []
-    results_time_model = []
-    results_cost_model = []
-    for outer_steps in tqdm(OUTER_STEPS, desc="Processing OUTER_STEPS \n", leave=True):
-        cfg["OUTER_STEPS"] = outer_steps
-        logger.info(f"Running SA baseline with OUTER_STEPS={outer_steps}")
-        start_time = time.time()
-        dict_solution = sa_baseline(problem, init_x, cfg)
-        end_time = time.time()
-        final_cost = torch.mean(dict_solution["min_cost"]).item()
-        results_cost.append(final_cost)
-        results_time.append(end_time - start_time)
-        logger.info(
-            f"OUTER_STEPS: {outer_steps}, Final Cost: {final_cost}, "
-            f"Time: {end_time - start_time:.2f} seconds"
-        )
-        actor = CVRPActor(
-            cfg["EMBEDDING_DIM"],
-            cfg["ENTRY"],
-            num_hidden_layers=cfg["NUM_H_LAYERS"],
-            device=cfg["DEVICE"],
-            mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
-            method=cfg["UPDATE_METHOD"],
-        )
-        logger.info(f"Running NSA with OUTER_STEPS={outer_steps}")
-        start_time = time.time()
-        dict_solution = sa_test(
-            actor,
-            problem,
-            init_x,
-            cfg,
-            replay_buffer=None,
-            baseline=False,
-            greedy=False,
-            desc_tqdm="NSA Model",
-        )
-        end_time = time.time()
-        final_cost = torch.mean(dict_solution["min_cost"]).item()
-        results_time_model.append(end_time - start_time)
-        results_cost_model.append(final_cost)
-        logger.info(
-            f"OUTER_STEPS: {outer_steps}, Final Cost: {final_cost}, "
-            f"Time: {end_time - start_time:.2f} seconds"
-        )
     # Plotting the results
     fig, ax1 = plt.subplots()
 
     ax1.set_xlabel("OUTER_STEPS")
     ax1.set_ylabel("Time (seconds)")
-    ax1.plot(OUTER_STEPS, results_time, marker="o", color="tab:blue", label="SA Time")
-    ax1.plot(
-        OUTER_STEPS, results_time_model, marker="^", color="tab:green", label="NSA Time"
-    )
+    if results_time_cpu != [] and results_time_model_cpu != []:
+        ax1.plot(
+            OUTER_STEPS[:len(results_time_cpu)],
+            results_time_cpu,
+            marker="o",
+            color="tab:blue",
+            label="CPU SA Time",
+        )
+        ax1.plot(
+            OUTER_STEPS[:len(results_time_model_cpu)],
+            results_time_model_cpu,
+            marker="^",
+            color="tab:green",
+            label="CPU NSA Time",
+        )
+    if results_time_gpu != [] and results_time_model_gpu != []:
+        ax1.plot(
+            OUTER_STEPS,
+            results_time_gpu,
+            marker="o",
+            color="tab:orange",
+            label="GPU SA Time",
+        )
+        ax1.plot(
+            OUTER_STEPS,
+            results_time_model_gpu,
+            marker="^",
+            color="tab:red",
+            label="GPU NSA Time",
+        )
     ax1.tick_params(axis="y")
     ax1.legend(loc="upper left")
-
-    plt.title("Time vs STEPS")
 
     fig.tight_layout()  # to prevent overlap
     plt.title("Time vs STEPS")
     plt.savefig("plots/time_comparaison.png")
     plt.close()
     logger.info("Time comparison plot saved as 'plots/time_comparaison.png'.")
-
-    # Adding a second plot for cost comparison
-    fig, ax2 = plt.subplots()
-
-    ax2.set_xlabel("OUTER_STEPS")
-    ax2.set_ylabel("Cost")
-    ax2.plot(OUTER_STEPS, results_cost, marker="o", color="tab:red", label="SA Cost")
-    ax2.plot(
-        OUTER_STEPS,
-        results_cost_model,
-        marker="^",
-        color="tab:purple",
-        label="NSA Cost",
-    )
-    ax2.tick_params(axis="y")
-    ax2.legend(loc="upper right")
-
-    plt.title("Cost vs STEPS")
-    fig.tight_layout()  # to prevent overlap
-    plt.savefig("plots/cost_comparaison.png")
-    plt.close()
-    logger.info("Cost comparison plot saved as 'plots/cost_comparaison.png'.")
