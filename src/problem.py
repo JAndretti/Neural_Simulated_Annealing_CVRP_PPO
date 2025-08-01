@@ -18,6 +18,7 @@ from heur_init import (
     construct_cvrp_solution,
     cheapest_insertion,
     path_cheapest_arc,
+    farthest_insertion,
 )
 
 
@@ -623,6 +624,8 @@ class CVRP(Problem):
             sol = cheapest_insertion(self).to(self.device)
         elif self.params["INIT"] == "path_cheapest_arc":
             sol = path_cheapest_arc(self).to(self.device)
+        elif self.params["INIT"] == "farthest_insertion":
+            sol = farthest_insertion(self).to(self.device)
         else:
             raise ValueError(
                 f"Unsupported initialization method: {self.params['INIT']}"

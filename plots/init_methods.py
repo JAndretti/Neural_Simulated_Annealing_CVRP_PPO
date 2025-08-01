@@ -51,6 +51,7 @@ if __name__ == "__main__":
         "Clark_and_Wright",
         "cheapest_insertion",
         "path_cheapest_arc",
+        "farthest_insertion",
     ]
     res = []
     times = []
@@ -77,6 +78,7 @@ if __name__ == "__main__":
         "pink",
         "lightyellow",
         "lightgray",
+        "lightcyan",
     ]
     plt.figure(figsize=(10, 6))
     plt.bar(methods, res, color=colors, edgecolor="black", alpha=0.7)
