@@ -258,7 +258,7 @@ def main():
 
 
 def test_or_tools(params, cfg):
-    solutions, _ = or_tools(params, cfg)
+    solutions, _, _ = or_tools(params, cfg)
     tensor = filter_and_convert_solutions(solutions)
     return tensor
 

@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Tuple
 import torch
 from model import SAModel
 from problem import Problem
@@ -7,29 +7,24 @@ from scheduler import Scheduler
 from tqdm import tqdm
 
 
-def metropolis_accept(
-    cost_improvement: torch.Tensor, current_temp: torch.Tensor, device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Applies the Metropolis acceptance criterion.
+# ================================
+# UTILITY FUNCTIONS
+# ================================
 
-    Args:
-        cost_improvement: The difference between the current cost and the proposed cost.
-        current_temp: The current temperature.
-        device: The device to perform the calculations on.
 
-    Returns:
-        A tuple containing:
-        - is_accepted: A Long tensor indicating acceptance (1) or rejection (0).
-        - actual_improvement: The cost improvement achieved,
-          considering only the accepted moves.
-    """
-    # Metropolis acceptance criterion
-    acceptance_prob = p_accept(cost_improvement, current_temp)
-    random_sample = torch.rand(acceptance_prob.shape, device=device)
-    is_accepted = (random_sample < acceptance_prob).long()
-    actual_improvement = cost_improvement * is_accepted
-    return is_accepted, actual_improvement
+def scale_between(value: float, min_value: float, max_value: float) -> float:
+    """Scale a value in [0, 1] to the range [min_value, max_value]."""
+    return min_value + (max_value - min_value) * value
+
+
+def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
+    """Scale a value in [min_value, max_value] to the range [0, 1]."""
+    return (value - min_value) / (max_value - min_value)
+
+
+# ================================
+# ACCEPTANCE CRITERIA
+# ================================
 
 
 def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
@@ -46,34 +41,314 @@ def p_accept(gain: torch.Tensor, temp: torch.Tensor) -> torch.Tensor:
     return torch.minimum(torch.exp(gain / temp), torch.ones_like(gain))
 
 
-def scale_between(value: float, min_value: float, max_value: float) -> float:
+def metropolis_accept(
+    cost_improvement: torch.Tensor, current_temp: torch.Tensor, device: torch.device
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Scale a value in [0, 1] to the range [min_value, max_value].
+    Apply the Metropolis acceptance criterion.
 
     Args:
-        value: Input value in [0, 1]
-        min_value: Minimum of target range
-        max_value: Maximum of target range
+        cost_improvement: The difference between current and proposed cost
+        current_temp: Current temperature
+        device: Device for calculations
 
     Returns:
-        Scaled value in [min_value, max_value]
+        Tuple of (is_accepted, actual_improvement)
     """
-    return min_value + (max_value - min_value) * value
+    acceptance_prob = p_accept(cost_improvement, current_temp)
+    random_sample = torch.rand(acceptance_prob.shape, device=device)
+    is_accepted = (random_sample < acceptance_prob).long()
+    actual_improvement = cost_improvement * is_accepted
+    return is_accepted, actual_improvement
 
 
-def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
-    """
-    Scale a value in [min_value, max_value] to the range [0, 1].
+# ================================
+# INITIALIZATION HELPERS
+# ================================
 
-    Args:
-        value: Input value in [min_value, max_value]
-        min_value: Minimum of original range
-        max_value: Maximum of original range
 
-    Returns:
-        Scaled value in [0, 1]
-    """
-    return (value - min_value) / (max_value - min_value)
+def initialize_optimization_state(
+    problem: Problem, initial_solution: torch.Tensor, device: torch.device
+):
+    """Initialize all optimization tracking variables."""
+    best_solution = current_solution = initial_solution
+    best_cost = current_cost = problem.cost(best_solution)
+    capacity_left = problem.capacity_utilization(best_solution)
+    initial_cost = best_cost.clone()
+    cumulative_cost = best_cost.clone()
+    best_cost_step = torch.zeros_like(best_cost, dtype=torch.long)
+
+    return {
+        "best_solution": best_solution,
+        "current_solution": current_solution,
+        "best_cost": best_cost,
+        "current_cost": current_cost,
+        "capacity_left": capacity_left,
+        "initial_cost": initial_cost,
+        "cumulative_cost": cumulative_cost,
+        "best_cost_step": best_cost_step,
+    }
+
+
+def initialize_temperature(config: dict, batch_size: int, device: torch.device):
+    """Initialize temperature schedule."""
+    current_temp = torch.tensor([1], device=device).repeat(batch_size)
+    current_temp = scale_between(current_temp, config["STOP_TEMP"], config["INIT_TEMP"])
+    return current_temp
+
+
+def initialize_tracking_variables():
+    """Initialize all tracking and history variables."""
+    return {
+        "accepted_moves": 0,
+        "rejected_moves": 0,
+        "action_distributions": [],
+        "state_history": [],
+        "action_history": [],
+        "is_valid_history": [],
+        "temperature": [],
+        "heuristic_choice": [],
+        "acceptance_history": [],
+        "cost_history": [],
+        "reward_signal": None,
+        "ratio": 0.0,
+    }
+
+
+# ================================
+# ACTION GENERATION AND PROCESSING
+# ================================
+
+
+def generate_action(
+    actor: SAModel,
+    current_state: torch.Tensor,
+    baseline: bool,
+    greedy: bool,
+    random_std: float,
+    problem: Problem,
+):
+    """Generate action from policy or baseline."""
+    if baseline:
+        return actor.baseline_sample(
+            current_state, random_std=random_std, problem=problem
+        )
+    else:
+        return actor.sample(current_state, greedy=greedy, problem=problem)
+
+
+def process_heuristic_action(action: torch.Tensor, config: dict, tracking: dict):
+    """Process heuristic action tracking if using mixed approach."""
+    if config["HEURISTIC"] == "mix":
+        heuristic_action = sum(action[:, 2])
+        tracking["ratio"] += heuristic_action / len(action[:, 2])
+        tracking["heuristic_choice"].append(heuristic_action)
+
+
+def record_action_info(
+    actor: SAModel,
+    current_state: torch.Tensor,
+    action: torch.Tensor,
+    problem: Problem,
+    tracking: dict,
+    record_state: bool,
+):
+    """Record action information for analysis."""
+    if record_state:
+        tracking["action_distributions"].append(
+            actor.get_logits(current_state, action, problem=problem)
+        )
+        tracking["action_history"].append(action)
+
+
+# ================================
+# SOLUTION UPDATE AND ACCEPTANCE
+# ================================
+
+
+def evaluate_and_accept_solution(
+    problem: Problem,
+    current_state: torch.Tensor,
+    action: torch.Tensor,
+    current_cost: torch.Tensor,
+    current_temp: torch.Tensor,
+    config: dict,
+    device: torch.device,
+):
+    """Evaluate proposed solution and determine acceptance."""
+    # Generate and evaluate proposed solution
+    solution_components, *_ = problem.from_state(current_state)
+    proposed_solution, is_valid = problem.update(solution_components, action)
+    proposed_cost = problem.cost(proposed_solution)
+
+    # Calculate cost improvement
+    cost_improvement = current_cost - proposed_cost
+
+    # Apply acceptance criterion
+    if config["METROPOLIS"]:
+        is_accepted, actual_improvement = metropolis_accept(
+            cost_improvement, current_temp, device
+        )
+    else:
+        is_accepted = torch.ones_like(cost_improvement)
+        actual_improvement = cost_improvement
+
+    return {
+        "solution_components": solution_components,
+        "proposed_solution": proposed_solution,
+        "proposed_cost": proposed_cost,
+        "is_valid": is_valid,
+        "is_accepted": is_accepted,
+        "actual_improvement": actual_improvement,
+    }
+
+
+def update_current_solution(
+    solution_data: dict, current_cost: torch.Tensor, current_solution: torch.Tensor
+):
+    """Update current solution based on acceptance."""
+    is_accepted = solution_data["is_accepted"]
+    proposed_cost = solution_data["proposed_cost"]
+    proposed_solution = solution_data["proposed_solution"]
+    solution_components = solution_data["solution_components"]
+
+    # Update current cost and solution
+    new_current_cost = is_accepted * proposed_cost + (1 - is_accepted) * current_cost
+    is_accepted_expanded = extend_to(is_accepted, solution_components)
+    new_current_solution = (
+        is_accepted_expanded * proposed_solution
+        + (1 - is_accepted_expanded) * solution_components
+    ).long()
+
+    return new_current_cost, new_current_solution
+
+
+def update_best_solution(
+    current_cost: torch.Tensor,
+    current_solution: torch.Tensor,
+    best_cost: torch.Tensor,
+    best_solution: torch.Tensor,
+    step: int,
+    best_cost_step: torch.Tensor,
+    cumulative_cost: torch.Tensor,
+):
+    """Update best solution tracking."""
+    is_improvement = (current_cost < best_cost).long()
+    is_improvement_expanded = extend_to(is_improvement, current_solution)
+
+    new_best_solution = (
+        is_improvement_expanded * current_solution
+        + (1 - is_improvement_expanded) * best_solution
+    )
+    new_best_cost_step = torch.max(is_improvement * (step + 1), best_cost_step)
+    new_best_cost = torch.minimum(current_cost, best_cost)
+    new_cumulative_cost = cumulative_cost + new_best_cost
+
+    return new_best_solution, new_best_cost, new_best_cost_step, new_cumulative_cost
+
+
+# ================================
+# CAPACITY AND REWARD PROCESSING
+# ================================
+
+
+def apply_capacity_reward(
+    config: dict,
+    problem: Problem,
+    current_solution: torch.Tensor,
+    capacity_left: torch.Tensor,
+    actual_improvement: torch.Tensor,
+):
+    """Apply capacity-based reward adjustment."""
+    if config["CAPACITY_REWARD"]:
+        new_capacity_left = problem.capacity_utilization(current_solution)
+        # if old capacity is bigger than new, it's a positive reward so we soustract it
+        diff_capacity = config["CAPACITY_REWARD_FACTOR"] * (
+            capacity_left - new_capacity_left
+        )
+        actual_improvement = actual_improvement - diff_capacity
+        return actual_improvement, new_capacity_left
+    return actual_improvement, capacity_left
+
+
+def calculate_reward(
+    config: dict,
+    actual_improvement: torch.Tensor,
+    is_valid: torch.Tensor,
+    best_cost: torch.Tensor,
+    cumulative_cost: torch.Tensor,
+    initial_cost: torch.Tensor,
+    last_step: bool = False,
+):
+    """Calculate reward signal for reinforcement learning."""
+    if config["METHOD"] != "ppo":
+        return None
+
+    if config["REWARD"] == "immediate":
+        reward_signal = actual_improvement.unsqueeze(1)
+
+        # Apply negative reward for invalid actions
+        if config["NEG_REWARD"] != 0:
+            reward_signal = (
+                reward_signal * is_valid + (1 - is_valid) * -config["NEG_REWARD"]
+            )
+
+        # Normalize rewards
+        if config["NORMALIZE_REWARD"]:
+            max_abs_reward = torch.max(torch.abs(reward_signal))
+            if max_abs_reward > 0:
+                reward_signal = reward_signal / max_abs_reward
+
+    elif config["REWARD"] == "last":
+        if last_step:
+            reward_signal = (initial_cost - best_cost).unsqueeze(1)
+        else:
+            reward_signal = torch.zeros_like(
+                best_cost, device=best_cost.device
+            ).unsqueeze(1)
+
+    elif config["REWARD"] == "min_cost":
+        reward_signal = -best_cost.view(-1, 1)
+    elif config["REWARD"] == "primal":
+        reward_signal = -cumulative_cost.view(-1, 1)
+
+    return reward_signal
+
+
+# ================================
+# TEMPERATURE AND STATE UPDATES
+# ================================
+
+
+def update_temperature_and_state(
+    step: int,
+    config: dict,
+    scheduler: Scheduler,
+    current_solution: torch.Tensor,
+    problem: Problem,
+    device: torch.device,
+):
+    """Update temperature and prepare next state."""
+    # Calculate advancement ratio (decreases from 1 to 0)
+    adv = torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device)
+
+    # Use predefined cooling schedule
+    next_temp = scheduler.step(step).to(device).repeat(current_solution.shape[0])
+
+    # Normalize temperature for state representation
+    model_next_temp = scale_to_unit(next_temp, config["STOP_TEMP"], config["INIT_TEMP"])
+
+    # Build next state
+    next_state = problem.to_state(
+        *problem.build_state_components(current_solution, model_next_temp, adv)
+    ).to(device)
+
+    return next_temp, next_state
+
+
+# ================================
+# MAIN TRAINING FUNCTION
+# ================================
 
 
 def sa_train(
@@ -93,44 +368,15 @@ def sa_train(
     """
     Perform Simulated Annealing optimization for combinatorial problems.
 
-    Args:
-        actor: Policy network proposing solution modifications
-        problem: Problem definition (e.g., CVRP)
-        initial_solution: Starting solution tensor
-        config: Dictionary containing hyperparameters:
-               - INIT_TEMP: Starting temperature
-               - STOP_TEMP: Final temperature
-               - OUTER_STEPS: Number of temperature steps
-               - INNER_STEPS: Steps per temperature
-               - SCHEDULER: Cooling schedule type
-               - METHOD: Optimization method
-               - REWARD: Reward calculation method
-        baseline: Whether to use random actions instead of actor
-        random_std: Standard deviation for random actions
-        greedy: Whether to use greedy action selection
-        record_state: Whether to track optimization states
-        replay_buffer: Experience replay buffer for RL training
-
-    Returns:
-        Dictionary containing optimization results:
-        - best_x: Best solution found
-        - min_cost: Cost of best solution
-        - primal: Cumulative best costs
-        - ngain: Negative improvement from initial cost
-        - n_acc/n_rej: Count of accepted/rejected moves
-        - distributions: Action probabilities (if recorded)
-        - states: State history (if recorded)
-        - actions: Action history (if recorded)
-        - acceptance: Move acceptance (if recorded)
-        - costs: Cost history (if recorded)
-        - init_cost: Initial solution cost
-        - reward: Computed rewards
-        - temperature: Temperature schedule
+    This function implements a neural-guided simulated annealing algorithm that uses
+    a policy network to propose solution modifications while following a temperature
+    cooling schedule for acceptance decisions.
     """
+    # Device setup
     if device is None:
         device = initial_solution.device
 
-    # Set up cooling schedule
+    # Initialize scheduler
     scheduler = Scheduler(
         config["SCHEDULER"],
         T_max=config["INIT_TEMP"],
@@ -138,71 +384,32 @@ def sa_train(
         step_max=config["OUTER_STEPS"],
     )
 
-    # Initialize optimization tracking variables
-    best_solution = current_solution = initial_solution
-    best_cost = problem.cost(best_solution)
-    capacity_left = problem.capacity_utilization(best_solution)
-    initial_cost = best_cost.clone()
-    cumulative_cost = best_cost.clone()
-    current_cost = best_cost.clone()
+    # Initialize all optimization state variables
+    opt_state = initialize_optimization_state(problem, initial_solution, device)
+    current_temp = initialize_temperature(
+        config, opt_state["best_cost"].shape[0], device
+    )
+    tracking = initialize_tracking_variables()
 
-    # --------------------------------
-    # Track optimization progress
-    # --------------------------------
-    # Record the step at which the best cost is found for each instance in the batch
-    best_cost_step = torch.zeros_like(best_cost, dtype=torch.long)
+    # Add initial temperature to tracking
+    tracking["temperature"].append(current_temp.clone())
+    tracking["cost_history"].append(opt_state["current_cost"].clone())
 
-    # --------------------------------
-    # Set initial temperature
-    # --------------------------------
-
-    # Use default initial temperature (will be scaled below)
-    current_temp = torch.tensor([1], device=device).repeat(best_cost.shape[0])
-
-    # Scale temperature to the configured range [STOP_TEMP, INIT_TEMP]
-    current_temp = scale_between(current_temp, config["STOP_TEMP"], config["INIT_TEMP"])
-    next_temp = current_temp.clone()  # Initialize next_temp for first iteration
-
-    # --------------------------------
-    # Initialize tracking variables
-    # --------------------------------
-    # Move statistics
-    accepted_moves = 0  # Count of accepted moves
-    rejected_moves = 0  # Count of rejected moves
-
-    # History containers for analysis and visualization
-    action_distributions = []  # Store policy distributions
-    state_history = []  # Store states visited during optimization
-    action_history = []  # Store actions taken
-    is_valid_history = []  # Track validity of actions if needed
-    temperature = [current_temp.clone()]  # Store temperature schedule
-    heuristic_choice = []  # Track heuristic choices if using mixed approach
-    acceptance_history = []  # Track which moves were accepted
-    cost_history = [current_cost.clone()]  # Track cost evolution
-    reward_signal = None  # Will store rewards for RL training
-    ratio = 0.0  # Track ratio of heuristic actions if using mixed approach
-
-    # --------------------------------
     # Prepare initial state representation
-    # --------------------------------
-    # Convert the initial solution to the state representation expected by the policy
-    # Normalize temperature to [0,1] for the state representation
     normalized_temp = scale_to_unit(
         current_temp, config["STOP_TEMP"], config["INIT_TEMP"]
     )
-
-    # Create state components using problem-specific function
-    # This typically includes solution encoding, temperature, and progress information
     components = problem.build_state_components(
-        current_solution,
+        opt_state["current_solution"],
         normalized_temp,
-        torch.tensor((1), device=device),  # Initial progress (full time remaining)
+        torch.tensor(1.0, device=device),  # Initial progress
     )
-
     current_state = problem.to_state(*components).to(device)
-    desc = "Train/ " if train else "Test/ "
-    desc += desc_tqdm
-    # Main optimization loop over temperature steps
+
+    # Progress bar setup
+    desc = ("Train/ " if train else "Test/ ") + desc_tqdm
+
+    # Main optimization loop
     for step in tqdm(
         range(config["OUTER_STEPS"]),
         desc=desc,
@@ -210,128 +417,113 @@ def sa_train(
         unit="step",
         leave=False,
     ):
+
         # Inner loop at fixed temperature
         for inner_step in range(config["INNER_STEPS"]):
+
+            # Record current state if needed
             if record_state:
-                state_history.append(current_state)
+                tracking["state_history"].append(current_state)
 
-            # Generate action from policy or baseline
-            if baseline:
-                action, action_log_prob = actor.baseline_sample(
-                    current_state, random_std=random_std, problem=problem
-                )
-            else:
-                action, action_log_prob = actor.sample(
-                    current_state, greedy=greedy, problem=problem
-                )
-            if config["HEURISTIC"] == "mix":
-                heuristic_action = sum(action[:, 2])
-                ratio += heuristic_action / len(action[:, 2])
-                heuristic_choice.append(heuristic_action)
+            # Generate action from policy
+            action, action_log_prob = generate_action(
+                actor, current_state, baseline, greedy, random_std, problem
+            )
 
-            # Record action information if needed
+            # Process heuristic tracking
+            process_heuristic_action(action, config, tracking)
+
+            # Record action information
+            record_action_info(
+                actor, current_state, action, problem, tracking, record_state
+            )
+
+            # Evaluate proposed solution and determine acceptance
+            solution_data = evaluate_and_accept_solution(
+                problem,
+                current_state,
+                action,
+                opt_state["current_cost"],
+                current_temp,
+                config,
+                device,
+            )
+
+            # Track validity metrics
+            tracking["is_valid_history"].append(
+                solution_data["is_valid"].to(torch.float32).mean().item()
+            )
+
+            # Update move counters
+            tracking["accepted_moves"] += solution_data["is_accepted"]
+            tracking["rejected_moves"] += 1 - solution_data["is_accepted"]
+
+            # Record acceptance if needed
             if record_state:
-                action_distributions.append(
-                    actor.get_logits(current_state, action, problem=problem)
-                )
-                action_history.append(action)
-
-            # Generate proposed solution
-            solution_components, *_ = problem.from_state(current_state)
-            proposed_solution, is_valid = problem.update(solution_components, action)
-            proposed_cost = problem.cost(proposed_solution)
-
-            # Metrics is valid
-            is_valid_history.append(is_valid.to(torch.float32).mean().item())
-            # Calculate improvement
-            cost_improvement = current_cost - proposed_cost
-
-            if config["METROPOLIS"]:
-                is_accepted, actual_improvement = metropolis_accept(
-                    cost_improvement, current_temp, device
-                )
-            else:
-                is_accepted = torch.ones_like(cost_improvement)
-                actual_improvement = cost_improvement
-            # Update counters
-            accepted_moves += is_accepted
-            rejected_moves += 1 - is_accepted
-
-            if record_state:
-                acceptance_history.append(is_accepted)
+                tracking["acceptance_history"].append(solution_data["is_accepted"])
 
             # Update current solution
-            current_cost = (
-                is_accepted * proposed_cost + (1 - is_accepted) * current_cost
-            )
-            is_accepted_expanded = extend_to(is_accepted, solution_components)
-            current_solution = (
-                is_accepted_expanded * proposed_solution
-                + (1 - is_accepted_expanded) * solution_components
-            ).long()
-
-            if config["CAPACITY_REWARD"]:
-                new_capacity_left = problem.capacity_utilization(current_solution)
-                diff_capacity = config["CAPACITY_REWARD_FACTOR"] * (
-                    new_capacity_left - capacity_left
+            opt_state["current_cost"], opt_state["current_solution"] = (
+                update_current_solution(
+                    solution_data,
+                    opt_state["current_cost"],
+                    opt_state["current_solution"],
                 )
-                actual_improvement -= diff_capacity
-                capacity_left = new_capacity_left
-            # Update best solution tracking
+            )
+
+            # Apply capacity reward if enabled
+            solution_data["actual_improvement"], opt_state["capacity_left"] = (
+                apply_capacity_reward(
+                    config,
+                    problem,
+                    opt_state["current_solution"],
+                    opt_state["capacity_left"],
+                    solution_data["actual_improvement"],
+                )
+            )
+
+            # Record cost history
             if record_state:
-                cost_history.append(current_cost)
+                tracking["cost_history"].append(opt_state["current_cost"])
 
-            is_improvement = (current_cost < best_cost).long()
-            is_improvement_expanded = extend_to(is_improvement, solution_components)
-            best_solution = (
-                is_improvement_expanded * current_solution
-                + (1 - is_improvement_expanded) * best_solution
+            # Update best solution tracking
+            (
+                opt_state["best_solution"],
+                opt_state["best_cost"],
+                opt_state["best_cost_step"],
+                opt_state["cumulative_cost"],
+            ) = update_best_solution(
+                opt_state["current_cost"],
+                opt_state["current_solution"],
+                opt_state["best_cost"],
+                opt_state["best_solution"],
+                step,
+                opt_state["best_cost_step"],
+                opt_state["cumulative_cost"],
             )
-            best_cost_step = torch.max(is_improvement * (step + 1), best_cost_step)
-            best_cost = torch.minimum(current_cost, best_cost)
-            cumulative_cost += best_cost
 
-            # Temperature update at end of inner steps
+            # Update temperature and state at end of inner steps
             if inner_step == config["INNER_STEPS"] - 1:
-                # Calculate advancement ratio (decreases from 1 to 0)
-                adv = torch.tensor(1 - (step / config["OUTER_STEPS"]), device=device)
-                # Use predefined cooling schedule
-                next_temp = scheduler.step(step).to(device).repeat(best_cost.shape[0])
-                temperature.append(next_temp.detach())
-
-                # Normalize temperature for state representation
-                model_next_temp = scale_to_unit(
-                    next_temp, config["STOP_TEMP"], config["INIT_TEMP"]
+                current_temp, next_state = update_temperature_and_state(
+                    step,
+                    config,
+                    scheduler,
+                    opt_state["current_solution"],
+                    problem,
+                    device,
                 )
+                tracking["temperature"].append(current_temp.detach())
 
-                # Build next state for the algorithm
-                next_state = problem.to_state(
-                    *problem.build_state_components(
-                        current_solution, model_next_temp, adv
-                    )
-                ).to(device)
-
-            # Reward calculation for reinforcement learning
-            if config["METHOD"] == "ppo":
-                if config["REWARD"] == "immediate":
-                    reward_signal = actual_improvement.unsqueeze(1)
-                    if config["NEG_REWARD"] != 0:
-                        # Apply negative reward for invalid actions
-                        reward_signal = (
-                            reward_signal * is_valid
-                            + (1 - is_valid) * -config["NEG_REWARD"]
-                        )
-                    if config["NORMALIZE_REWARD"]:
-                        # Normalize rewards to [-1, 1] range
-                        # Find the max absolute value for scaling
-                        max_abs_reward = torch.max(torch.abs(reward_signal))
-                        # Avoid division by zero
-                        if max_abs_reward > 0:
-                            reward_signal = reward_signal / max_abs_reward
-                elif config["REWARD"] == "min_cost":
-                    reward_signal = -best_cost.view(-1, 1)
-                elif config["REWARD"] == "primal":
-                    reward_signal = -cumulative_cost.view(-1, 1)
+            # Calculate reward for RL
+            tracking["reward_signal"] = calculate_reward(
+                config,
+                solution_data["actual_improvement"],
+                solution_data["is_valid"],
+                opt_state["best_cost"],
+                opt_state["cumulative_cost"],
+                opt_state["initial_cost"],
+                step + 1 == config["OUTER_STEPS"],
+            )
 
             # Store experience in replay buffer
             if replay_buffer is not None:
@@ -339,45 +531,48 @@ def sa_train(
                     current_state,
                     action,
                     next_state,
-                    reward_signal,
+                    tracking["reward_signal"],
                     action_log_prob,
                     config["GAMMA"],
                 )
 
         # Update state and temperature for next iteration
         current_state = next_state.clone()
-        current_temp = next_temp.clone()
 
     # Finalize results
-    negative_improvement = -(initial_cost - current_cost)
+    negative_improvement = -(opt_state["initial_cost"] - opt_state["current_cost"])
 
     # Handle final transition in replay buffer
     if replay_buffer is not None and len(replay_buffer) > 0:
         final_transition = replay_buffer.pop()
         replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
 
-    final_capacity_left = problem.capacity_utilization(best_solution)
+    final_capacity_left = problem.capacity_utilization(opt_state["best_solution"])
 
-    dict = {
-        "best_x": best_solution,
-        "min_cost": best_cost,
-        "primal": cumulative_cost,
+    # Build results dictionary
+    results = {
+        "best_x": opt_state["best_solution"],
+        "min_cost": opt_state["best_cost"],
+        "primal": opt_state["cumulative_cost"],
         "ngain": negative_improvement,
-        "n_acc": accepted_moves.float(),
-        "n_rej": rejected_moves.float(),
-        "distributions": action_distributions,
-        "is_valid": torch.tensor(is_valid_history),
-        "states": state_history,
-        "actions": action_history,
-        "acceptance": acceptance_history,
-        "costs": cost_history,
-        "init_cost": initial_cost,
-        "reward": reward_signal,
-        "temperature": temperature,
-        "best_step": best_cost_step.float(),
+        "n_acc": tracking["accepted_moves"].float(),
+        "n_rej": tracking["rejected_moves"].float(),
+        "distributions": tracking["action_distributions"],
+        "is_valid": torch.tensor(tracking["is_valid_history"]),
+        "states": tracking["state_history"],
+        "actions": tracking["action_history"],
+        "acceptance": tracking["acceptance_history"],
+        "costs": tracking["cost_history"],
+        "init_cost": opt_state["initial_cost"],
+        "reward": tracking["reward_signal"],
+        "temperature": tracking["temperature"],
+        "best_step": opt_state["best_cost_step"].float(),
         "capacity_left": final_capacity_left,
     }
+
+    # Add heuristic-specific results
     if config["HEURISTIC"] == "mix":
-        dict["ratio"] = ratio / config["OUTER_STEPS"]
-        dict["heuristic"] = heuristic_choice
-    return dict
+        results["ratio"] = tracking["ratio"] / config["OUTER_STEPS"]
+        results["heuristic"] = tracking["heuristic_choice"]
+
+    return results
