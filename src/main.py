@@ -268,10 +268,12 @@ def main(cfg: dict) -> None:
     # Initialize models
     if cfg["PAIRS"]:
         actor = CVRPActorPairs(
-            cfg["EMBEDDING_DIM"],
+            embed_dim=cfg["EMBEDDING_DIM"],
+            c=cfg["ENTRY"],
             num_hidden_layers=cfg["NUM_H_LAYERS"],
             device=cfg["DEVICE"],
             mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
+            method=cfg["UPDATE_METHOD"],
         )
     else:
         actor = CVRPActor(

@@ -63,11 +63,13 @@ class CVRPActorPairs(SAModel):
         num_hidden_layers: int = 2,
         device: str = "cpu",
         mixed_heuristic: bool = False,
+        method: str = "free",
     ) -> None:
         super().__init__(device)
         self.mixed_heuristic = mixed_heuristic
+        self.method = method
 
-        self.input_dim = c + 2 if mixed_heuristic else c
+        self.input_dim = c * 2 if mixed_heuristic else c * 2 - 2
         self.net = create_network(
             self.input_dim,
             embed_dim,
@@ -112,8 +114,8 @@ class CVRPActorPairs(SAModel):
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute logits and log probabilities for given state and action."""
-        pair_features, idx1, idx2, mask, heuristic_indices = (
-            self._prepare_features_and_pairs(state)
+        pair_features, idx1, idx2, heuristic_indices = self._prepare_features_and_pairs(
+            state
         )
 
         # Forward pass
@@ -169,12 +171,9 @@ class CVRPActorPairs(SAModel):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
 
-        pair_features, idx1, idx2, mask, heuristic_indices = (
-            self._prepare_features_and_pairs(state)
-        )  # Forward pass
-        outputs = self.forward(pair_features)
+        pair_features, idx1, idx2 = self._prepare_features_and_pairs(state)
+        logits = self.forward(pair_features)[..., 0]  # Forward pass
 
-        logits = outputs[..., 0]
         c, log_probs = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
         if self.mixed_heuristic:
@@ -186,17 +185,13 @@ class CVRPActorPairs(SAModel):
         else:
             action = torch.stack([idx1[c], idx2[c]], dim=-1)
 
-        total_log_probs = log_probs
-
-        return action, total_log_probs[..., 0], mask
+        return action, log_probs[..., 0]
 
     def evaluate(
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Evaluate log probabilities of given actions."""
-        pair_features, idx1, idx2, mask, heuristic_indices = (
-            self._prepare_features_and_pairs(state)
-        )
+        pair_features, idx1, idx2 = self._prepare_features_and_pairs(state)
         if self.mixed_heuristic:
             # Find the pair index
             pair_mask = (idx1 == action[:, 0].unsqueeze(1)) & (
@@ -212,9 +207,7 @@ class CVRPActorPairs(SAModel):
             action_idx = action_idx.nonzero(as_tuple=True)[1]
 
         # Forward pass
-        outputs = self.forward(pair_features)
-
-        logits = outputs[..., 0]
+        logits = self.forward(pair_features)[..., 0]
 
         # Compute action probabilities
         probs = torch.softmax(logits, dim=-1)
@@ -239,12 +232,14 @@ class CVRPActorPairs(SAModel):
         coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
 
         c_state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
-        mask = x.squeeze(-1) != 0
-        c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
+
+        if self.method == "rm_depot":
+            mask = x.squeeze(-1) != 0
+            c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
 
         # Get all possible pairs
         idx1, idx2 = torch.triu_indices(
-            c_state.shape[1], c_state.shape[1], offset=1, device=self.device
+            c_state.shape[1], c_state.shape[1], offset=1, device=c_state.device
         )
         x_pairs_1 = c_state[:, idx1, :]
         x_pairs_2 = c_state[:, idx2, :]
@@ -265,17 +260,15 @@ class CVRPActorPairs(SAModel):
             pair_features = pair_features.repeat_interleave(2, dim=1)
 
             # Add one-hot encoding for heuristic selection
-            heuristic_indices = torch.arange(2, device=self.device).repeat(n_pairs)
+            heuristic_indices = torch.arange(2, device=c_state.device).repeat(n_pairs)
             heuristic_one_hot = F.one_hot(heuristic_indices, num_classes=2).repeat(
                 n_problems, 1, 1
             )
 
             # Concatenate the one-hot encoding to the features
             pair_features = torch.cat([pair_features, heuristic_one_hot], dim=-1)
-        else:
-            heuristic_indices = None
 
-        return pair_features, idx1, idx2, mask, heuristic_indices
+        return pair_features, idx1, idx2
 
 
 class CVRPActor(SAModel):
@@ -366,7 +359,7 @@ class CVRPActor(SAModel):
         # Sample c1 at random
         if self.method == "rm_depot":
             mask = x.squeeze(-1) != 0
-            x = torch.stack([c[m] for c, m in zip(x, mask)], dim=0)
+            x = x[mask].view(n_problems, -1)
         logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
@@ -505,7 +498,7 @@ class CVRPActor(SAModel):
             c2_state = c2_state.repeat_interleave(2, dim=1)
 
             # Add one-hot encoding for heuristic selection
-            heuristic_indices = torch.arange(2, device=self.device).repeat(n_row)
+            heuristic_indices = torch.arange(2, device=c1_state.device).repeat(n_row)
             heuristic_one_hot = F.one_hot(heuristic_indices, num_classes=2).repeat(
                 n_problems, 1, 1
             )
