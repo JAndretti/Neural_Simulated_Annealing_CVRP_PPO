@@ -264,9 +264,11 @@ def apply_capacity_reward(
         new_capacity_left = problem.capacity_utilization(current_solution)
         # if old capacity is bigger than new, it's a positive reward so we soustract it
         diff_capacity = config["CAPACITY_REWARD_FACTOR"] * (
-            capacity_left - new_capacity_left
+            new_capacity_left - capacity_left
         )
-        actual_improvement = actual_improvement - diff_capacity
+        actual_improvement = actual_improvement - torch.minimum(
+            diff_capacity, torch.tensor(0.0, device=diff_capacity.device)
+        )
         return actual_improvement, new_capacity_left
     return actual_improvement, capacity_left
 
@@ -293,15 +295,10 @@ def calculate_reward(
                 reward_signal * is_valid + (1 - is_valid) * -config["NEG_REWARD"]
             )
 
-        # Normalize rewards
-        if config["NORMALIZE_REWARD"]:
-            max_abs_reward = torch.max(torch.abs(reward_signal))
-            if max_abs_reward > 0:
-                reward_signal = reward_signal / max_abs_reward
-
     elif config["REWARD"] == "last":
         if last_step:
             reward_signal = (initial_cost - best_cost).unsqueeze(1)
+            reward_signal[reward_signal == 0] = -1
         else:
             reward_signal = torch.zeros_like(
                 best_cost, device=best_cost.device
@@ -311,6 +308,12 @@ def calculate_reward(
         reward_signal = -best_cost.view(-1, 1)
     elif config["REWARD"] == "primal":
         reward_signal = -cumulative_cost.view(-1, 1)
+
+        # Normalize rewards
+    if config["NORMALIZE_REWARD"]:
+        max_abs_reward = torch.max(torch.abs(reward_signal))
+        if max_abs_reward > 0:
+            reward_signal = reward_signal / max_abs_reward
 
     return reward_signal
 

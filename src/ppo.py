@@ -89,7 +89,7 @@ def run_ppo_training_epochs(
 
     for epoch in tqdm(
         range(ppo_epochs),
-        desc=f"Epoch {curr_epoch} / PPO Training",
+        desc=f"Epoch {curr_epoch - 1} / PPO Training",
         leave=False,
         unit="epoch",
     ):
@@ -233,7 +233,7 @@ def ppo(
     n_problems = cfg["N_PROBLEMS"]  # Number of parallel problem instances
     problem_dim = pb_dim
     gamma = cfg["GAMMA"]  # Discount factor for future rewards
-    device = cfg["DEVICE"]  # Computation device (CPU/GPU)
+    end_device = cfg["DEVICE"]  # Computation device (CPU/GPU)
     device = DEVICE
 
     # Set networks to training mode
@@ -339,6 +339,6 @@ def ppo(
         cfg,
         curr_epoch,
     )
-    actor.to("cpu")
-    critic.to("cpu")
+    actor.to(end_device)
+    critic.to(end_device)
     return (actor_loss, critic_loss)

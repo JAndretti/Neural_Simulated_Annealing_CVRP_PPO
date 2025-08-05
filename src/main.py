@@ -2,6 +2,7 @@
 # Import required libraries
 # --------------------------------
 import torch  # PyTorch for deep learning
+import os
 import numpy as np  # NumPy for numerical operations
 import random  # For random operations
 
@@ -209,8 +210,10 @@ def main(cfg: dict) -> None:
             cfg["DEVICE"] = "cpu"
             print("CUDA device not available. Falling back to CPU.")
         else:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
             torch.cuda.empty_cache()
             torch.backends.cudnn.benchmark = True
+            logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
     elif "mps" in cfg["DEVICE"] and not torch.backends.mps.is_available():
         cfg["DEVICE"] = "cpu"
         print("MPS device not available. Falling back to CPU.")
@@ -237,9 +240,12 @@ def main(cfg: dict) -> None:
     n_test_pb = cfg["TEST_NB_PROBLEMS"]  # Number of test problems
     path = f"generated_problem/gen{dim_test}.pt"
     bdd = torch.load(path, map_location="cpu")
-    coords = bdd["node_coords"][:n_test_pb]
-    demands = bdd["demands"][:n_test_pb]
-    capacities = bdd["capacity"][:n_test_pb]
+
+    # Randomly select n_test_pb indices based on the seed
+    indices = torch.randperm(n_test_pb, generator=torch.Generator())
+    coords = bdd["node_coords"][indices]
+    demands = bdd["demands"][indices]
+    capacities = bdd["capacity"][indices]
     problem_test = CVRP(
         dim_test,
         capacities.shape[0],  # Number of problems
