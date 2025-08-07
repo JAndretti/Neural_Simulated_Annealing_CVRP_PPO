@@ -639,4 +639,3 @@ if __name__ == "__main__":
         logger.info("Profiled training completed successfully")
     else:
         main(config)
-        logger.info("Training completed successfully")
