@@ -171,7 +171,7 @@ class CVRPActorPairs(SAModel):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
 
-        if state.shape[0] > 1000:
+        if state.shape[0]*state.shape[1] > 1000 * 161:
             actions = []
             log_probs_list = []
             for i in range(0, state.shape[0], 1000):

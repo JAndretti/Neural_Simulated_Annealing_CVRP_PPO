@@ -53,9 +53,21 @@ logger.add(
     format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<blue>{file}:{line}</blue> | "
-        "<yellow>{message}</yellow>"
+        "<red>WARNING</red> | "
+        "<red>{message}</red>"
     ),
     colorize=True,
+    level="WARNING",
+)
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
+        "<blue>{file}:{line}</blue> | "  # File and line in blue
+        "<yellow>{message}</yellow>"  # Message in yellow
+    ),
+    colorize=True,
+    level="INFO",
 )
 
 # --------------------------------
@@ -352,6 +364,11 @@ def initialize_test_problem(
     coordinates = test_data["node_coords"][indices]
     demands = test_data["demands"][indices]
     capacities = test_data["capacity"][indices]
+
+    if (coordinates.shape[0] * coordinates.shape[1] > 1000 * 161) and config["PAIRS"]:
+        logger.warning(
+            "Test problem size exceeds 1000x161, which may lead to performance issues."
+        )
 
     # Initialize test problem instance
     test_problem = CVRP(
