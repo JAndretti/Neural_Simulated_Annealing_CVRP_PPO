@@ -171,19 +171,47 @@ class CVRPActorPairs(SAModel):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
 
-        pair_features, idx1, idx2 = self._prepare_features_and_pairs(state)
-        logits = self.forward(pair_features)[..., 0]  # Forward pass
+        if state.shape[0] > 1000:
+            actions = []
+            log_probs_list = []
+            for i in range(0, state.shape[0], 1000):
+                chunk = state[i : i + 1000]
+                pair_features, idx1, idx2 = self._prepare_features_and_pairs(chunk)
+                logits = self.forward(pair_features)[..., 0]  # Forward pass
 
-        c, log_probs = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
+                c, log_probs = self.sample_from_logits(
+                    logits, greedy=greedy, one_hot=False
+                )
 
-        if self.mixed_heuristic:
-            pair_idx = c // 2
-            heuristic_idx = c % 2
-            action = torch.stack(
-                [idx1[pair_idx], idx2[pair_idx], heuristic_idx], dim=-1
-            )
+                if self.mixed_heuristic:
+                    pair_idx = c // 2
+                    heuristic_idx = c % 2
+                    action = torch.stack(
+                        [idx1[pair_idx], idx2[pair_idx], heuristic_idx], dim=-1
+                    )
+                else:
+                    action = torch.stack([idx1[c], idx2[c]], dim=-1)
+
+                actions.append(action)
+                log_probs_list.append(log_probs)
+
+                # Stack results from all chunks
+            action = torch.cat(actions, dim=0)
+            log_probs = torch.cat(log_probs_list, dim=0)
         else:
-            action = torch.stack([idx1[c], idx2[c]], dim=-1)
+            pair_features, idx1, idx2 = self._prepare_features_and_pairs(state)
+            logits = self.forward(pair_features)[..., 0]  # Forward pass
+
+            c, log_probs = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
+
+            if self.mixed_heuristic:
+                pair_idx = c // 2
+                heuristic_idx = c % 2
+                action = torch.stack(
+                    [idx1[pair_idx], idx2[pair_idx], heuristic_idx], dim=-1
+                )
+            else:
+                action = torch.stack([idx1[c], idx2[c]], dim=-1)
 
         return action, log_probs[..., 0]
 

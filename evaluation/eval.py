@@ -86,8 +86,6 @@ cfg = {
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    # "INIT": "nearest_neighbor",
-    # "CLUSTERING": False,
     "SEED": 0,
     "LOAD_PB": False if rapid else True,
 }
@@ -180,6 +178,9 @@ def perform_test(
         desc_tqdm="SA Baseline",
     )
     final_cost_baseline = torch.mean(test_baseline["min_cost"])
+    # Clear CUDA cache if using GPU
+    if cfg["DEVICE"] == "cuda":
+        torch.cuda.empty_cache()
     return init_cost, final_cost, final_cost_baseline, execution_time
 
 

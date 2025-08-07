@@ -1,52 +1,59 @@
+"""
+CVRP (Capacitated Vehicle Routing Problem) Solver using PPO and Simulated Annealing
+
+This module implements a reinforcement learning approach to solve CVRP problems
+using Proximal Policy Optimization (PPO) combined with Simulated Annealing for
+solution refinement.
+
+Main components:
+- Actor-Critic neural networks for policy learning
+- PPO for policy optimization
+- Simulated Annealing for solution exploration
+- WandB integration for experiment tracking
+"""
+
 # --------------------------------
 # Import required libraries
 # --------------------------------
-import torch  # PyTorch for deep learning
 import os
-import numpy as np  # NumPy for numerical operations
-import random  # For random operations
+import random
+from typing import Dict, Tuple, Optional, Any
 
-from tqdm import tqdm  # Progress bar for iterations
-from loguru import logger  # Enhanced logging capabilities
+import numpy as np
+import torch
+from loguru import logger
+from tqdm import tqdm
 
 # --------------------------------
 # Import custom modules
 # --------------------------------
-from model import (
-    CVRPActor,
-    CVRPActorPairs,
-    CVRPCritic,
-)  # Neural network models
-from ppo import ppo  # Proximal Policy Optimization implementation
-from replay import ReplayBuffer  # Experience replay for RL
-from sa import sa_train  # Simulated Annealing implementation
-from problem import CVRP  # CVRP problem definition
-
-from Logger import WandbLogger  # Weights & Biases logging
-from HP import _HP, get_script_arguments  # Hyperparameter management
+from HP import _HP, get_script_arguments
+from Logger import WandbLogger
+from model import CVRPActor, CVRPActorPairs, CVRPCritic
+from ppo import ppo
+from problem import CVRP
+from replay import ReplayBuffer
+from sa import sa_train
 
 # --------------------------------
-# Profiling tools
+# Profiling tools (optional)
 # --------------------------------
-
-profiler = False
-if profiler:
-    import cProfile  # For profiling code performance
-    import pstats  # For statistics from profiling
-    import io  # For in-memory stream handling
+ENABLE_PROFILER = False
+if ENABLE_PROFILER:
+    import cProfile
+    import io
+    import pstats
 
 # --------------------------------
 # Configure logger formatting
 # --------------------------------
-# Remove default logger
-logger.remove()
-# Add custom logger with colored output
+logger.remove()  # Remove default logger
 logger.add(
     lambda msg: print(msg, end=""),
     format=(
-        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
-        "<blue>{file}:{line}</blue> | "  # File and line in blue
-        "<yellow>{message}</yellow>"  # Message in yellow
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<blue>{file}:{line}</blue> | "
+        "<yellow>{message}</yellow>"
     ),
     colorize=True,
 )
@@ -54,66 +61,87 @@ logger.add(
 # --------------------------------
 # Load and prepare configuration
 # --------------------------------
-# Load base configuration from YAML file
-cfg = _HP("src/HyperParameters/HP.yaml")
-# Override with command line arguments
-cfg.update(get_script_arguments(cfg.keys()))
+config = _HP("src/HyperParameters/HP.yaml")
+config.update(get_script_arguments(config.keys()))
 
 # --------------------------------
 # Initialize experiment tracking
 # --------------------------------
-# Set up Weights & Biases logging if enabled
-if cfg["LOG"]:
-    # Initialize WandB with config
-    WandbLogger.init(None, 3, cfg)
-    # Log the model save directory for reference
+if config["LOG"]:
+    WandbLogger.init(None, 3, config)
     logger.info(f"WandB model save directory: {WandbLogger._instance.model_dir}")
 
 
 def log_training_and_test_metrics(
-    actor_loss, critic_loss, avg_actor_grad, avg_critic_grad, test, epoch, cfg
-):
+    actor_loss: Optional[float],
+    critic_loss: Optional[float],
+    avg_actor_grad: float,
+    avg_critic_grad: float,
+    test_results: Optional[Dict[str, torch.Tensor]],
+    epoch: int,
+    config: Dict[str, Any],
+) -> None:
+    """
+    Log training and testing metrics to WandB.
+
+    Args:
+        actor_loss: Actor network loss value
+        critic_loss: Critic network loss value
+        avg_actor_grad: Average gradient magnitude for actor
+        avg_critic_grad: Average gradient magnitude for critic
+        test_results: Dictionary containing test metrics
+        epoch: Current training epoch
+        config: Configuration dictionary
+    """
     logs = {}
+
+    # Log training metrics if available
     if actor_loss is not None:
-        logs = {
-            # Training metrics
-            "Actor_loss": actor_loss,
-            "Critic_loss": critic_loss,
-            "Train_loss": actor_loss + 0.5 * critic_loss,
-            # Gradient monitoring
-            "Avg_actor_grad": avg_actor_grad,
-            "Avg_critic_grad": avg_critic_grad,
-        }
-    if epoch % 10 == 0 and test is not None:
-        # Additional logs every 10 epochs
+        logs.update(
+            {
+                "Actor_loss": actor_loss,
+                "Critic_loss": critic_loss,
+                "Train_loss": actor_loss + 0.5 * critic_loss,
+                "Avg_actor_grad": avg_actor_grad,
+                "Avg_critic_grad": avg_critic_grad,
+            }
+        )
+
+    # Log test metrics every 10 epochs
+    if epoch % 10 == 0 and test_results is not None:
         test_logs = {
-            # Cost metrics
-            "Min_cost": torch.mean(test["min_cost"]),
-            # Improvement metrics
-            "Gain": torch.mean(test["init_cost"] - test["min_cost"]),
-            # Search statistics
-            "Acceptance_rate": torch.mean(test["n_acc"]) / cfg["OUTER_STEPS"],
-            "Step_best_cost": torch.mean(test["best_step"]) / cfg["OUTER_STEPS"],
-            "Valid_percentage": torch.mean(test["is_valid"]),
-            "Final_capacity_left": torch.mean(test["capacity_left"]),
+            "Min_cost": torch.mean(test_results["min_cost"]),
+            "Gain": torch.mean(test_results["init_cost"] - test_results["min_cost"]),
+            "Acceptance_rate": torch.mean(test_results["n_acc"])
+            / config["OUTER_STEPS"],
+            "Step_best_cost": torch.mean(test_results["best_step"])
+            / config["OUTER_STEPS"],
+            "Valid_percentage": torch.mean(test_results["is_valid"]),
+            "Final_capacity_left": torch.mean(test_results["capacity_left"]),
         }
         logs.update(test_logs)
-        if cfg["HEURISTIC"] == "mix":
-            logs["ratio_heuristic"] = test["ratio"]
+
+        # Add heuristic-specific metrics
+        if config["HEURISTIC"] == "mix":
+            logs["ratio_heuristic"] = test_results["ratio"]
+
     WandbLogger.log(logs)
 
 
-def save_model(path: str, actor_model: torch.nn.Module = None) -> None:
-    """Saves actor model state to specified path.
+def save_model(path: str, actor_model: Optional[torch.nn.Module] = None) -> None:
+    """
+    Save actor model state dictionary to specified path.
 
     Args:
-        path: Destination file path
-        actor_model: Model to be saved
+        path: Destination file path for model checkpoint
+        actor_model: PyTorch model to be saved
+
     Raises:
-        ValueError: If no model is provided
+        ValueError: If no model is provided for saving
     """
     if actor_model is not None:
         torch.save(actor_model.state_dict(), path)
+        logger.debug(f"Model saved to: {path}")
     else:
         raise ValueError("No model provided for saving")
 
@@ -121,329 +149,477 @@ def save_model(path: str, actor_model: torch.nn.Module = None) -> None:
 def train_ppo(
     actor: torch.nn.Module,
     critic: torch.nn.Module,
-    actor_opt: torch.optim.Optimizer,
-    critic_opt: torch.optim.Optimizer,
+    actor_optimizer: torch.optim.Optimizer,
+    critic_optimizer: torch.optim.Optimizer,
     problem: CVRP,
-    init_x: torch.Tensor,
-    cfg: dict,
+    initial_solutions: torch.Tensor,
+    config: Dict[str, Any],
     step: int = 0,
-) -> tuple:
-    """Executes one training cycle of PPO.
+) -> Tuple[Dict[str, torch.Tensor], float, float, float, float]:
+    """
+    Execute one training cycle of PPO algorithm.
 
-    1. Runs Simulated Annealing to collect experiences
-    2. Optimizes policy using PPO
-    3. Computes gradient statistics
+    Process:
+    1. Collect experiences using Simulated Annealing
+    2. Optimize policy using PPO
+    3. Compute gradient statistics for monitoring
+
+    Args:
+        actor: Actor neural network
+        critic: Critic neural network
+        actor_optimizer: Optimizer for actor network
+        critic_optimizer: Optimizer for critic network
+        problem: CVRP problem instance
+        initial_solutions: Initial solution tensor
+        config: Configuration dictionary
+        step: Current training step
 
     Returns:
         Tuple containing:
-        - SA training results
-        - Actor loss
-        - Critic loss
-        - Average actor gradients
-        - Average critic gradients
+        - SA training results dictionary
+        - Actor loss value
+        - Critic loss value
+        - Average actor gradient magnitude
+        - Average critic gradient magnitude
     """
+    # Clear GPU cache if using CUDA
+    if problem.device == "cuda":
+        torch.cuda.empty_cache()
+
     # Initialize experience replay buffer
-    replay = ReplayBuffer(cfg["OUTER_STEPS"] * cfg["INNER_STEPS"])
+    buffer_size = config["OUTER_STEPS"] * config["INNER_STEPS"]
+    replay_buffer = ReplayBuffer(buffer_size)
 
     # Collect experiences through Simulated Annealing
-    train_in = sa_train(
-        actor,
-        problem,
-        init_x,
-        cfg,
-        replay_buffer=replay,
+    sa_results = sa_train(
+        actor=actor,
+        problem=problem,
+        initial_solution=initial_solutions,
+        config=config,
+        replay_buffer=replay_buffer,
         baseline=False,
         greedy=False,
         train=True,
     )
 
-    # Optimize policy with PPO
+    # Optimize policy using PPO
     actor_loss, critic_loss = ppo(
-        actor, critic, init_x.shape[1], replay, actor_opt, critic_opt, step, cfg
+        actor=actor,
+        critic=critic,
+        pb_dim=initial_solutions.shape[1],
+        replay=replay_buffer,
+        actor_opt=actor_optimizer,
+        critic_opt=critic_optimizer,
+        curr_epoch=step,
+        cfg=config,
     )
 
     # Compute gradient statistics for monitoring
-    avg_actor_grad = np.mean(
-        [p.grad.abs().mean().item() for p in actor.parameters() if p.grad is not None]
-    )
-    avg_critic_grad = np.mean(
-        [p.grad.abs().mean().item() for p in critic.parameters() if p.grad is not None]
-    )
+    actor_gradients = [
+        param.grad.abs().mean().item()
+        for param in actor.parameters()
+        if param.grad is not None
+    ]
+    critic_gradients = [
+        param.grad.abs().mean().item()
+        for param in critic.parameters()
+        if param.grad is not None
+    ]
 
-    return (
-        train_in,
-        actor_loss,
-        critic_loss,
-        avg_actor_grad,
-        avg_critic_grad,
-    )
+    avg_actor_grad = np.mean(actor_gradients) if actor_gradients else 0.0
+    avg_critic_grad = np.mean(critic_gradients) if critic_gradients else 0.0
+
+    # Clean up GPU memory
+    if problem.device == "cuda":
+        torch.cuda.empty_cache()
+
+    return sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad
 
 
 def test_model(
     actor: torch.nn.Module,
     problem: CVRP,
-    init_x: torch.Tensor,
-    cfg: dict,
-):
-    """Tests the trained model using Simulated Annealing."""
+    initial_solutions: torch.Tensor,
+    config: Dict[str, Any],
+) -> Dict[str, torch.Tensor]:
+    """
+    Test the trained model performance using Simulated Annealing.
 
-    # Perform Simulated Annealing
-    test = sa_train(
-        actor,
-        problem,
-        init_x,
-        cfg,
+    Args:
+        actor: Trained actor network
+        problem: CVRP problem instance for testing
+        initial_solutions: Initial solution tensor
+        config: Configuration dictionary
+
+    Returns:
+        Dictionary containing test results and metrics
+    """
+    # Clear GPU cache if using CUDA
+    if problem.device == "cuda":
+        torch.cuda.empty_cache()
+
+    # Perform Simulated Annealing for testing
+    test_results = sa_train(
+        actor=actor,
+        problem=problem,
+        initial_solution=initial_solutions,
+        config=config,
         replay_buffer=None,
         baseline=False,
         greedy=False,
         train=False,
     )
-    return test
+
+    # Clean up GPU memory
+    if problem.device == "cuda":
+        torch.cuda.empty_cache()
+
+    return test_results
 
 
-def main(cfg: dict) -> None:
-    """Main training loop for CVRP optimization."""
+def setup_device_and_logging(config: Dict[str, Any]) -> str:
+    """
+    Configure compute device and logging based on availability.
 
-    # Device configuration
-    if "cuda" in cfg["DEVICE"]:
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Selected device string ('cuda', 'mps', or 'cpu')
+    """
+    device = config["DEVICE"]
+
+    # CUDA device configuration
+    if "cuda" in device:
         if not torch.cuda.is_available():
-            cfg["DEVICE"] = "cpu"
-            print("CUDA device not available. Falling back to CPU.")
+            device = "cpu"
+            logger.warning("CUDA device not available. Falling back to CPU.")
         else:
             os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
             torch.cuda.empty_cache()
             torch.backends.cudnn.benchmark = True
             logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-    elif "mps" in cfg["DEVICE"] and not torch.backends.mps.is_available():
-        cfg["DEVICE"] = "cpu"
-        print("MPS device not available. Falling back to CPU.")
 
-    logger.info(f"Using device: {cfg['DEVICE']}")
+    # Apple Metal Performance Shaders (MPS) configuration
+    elif "mps" in device and not torch.backends.mps.is_available():
+        device = "cpu"
+        logger.warning("MPS device not available. Falling back to CPU.")
 
-    # Set random seeds for reproducibility
-    torch.manual_seed(cfg["SEED"])
-    random.seed(cfg["SEED"])
-    np.random.seed(cfg["SEED"])
+    logger.info(f"Using device: {device}")
+    return device
 
-    # Initialize CVRP problem environment
-    problem = CVRP(
-        cfg["PROBLEM_DIM"],
-        cfg["N_PROBLEMS"],
-        cfg["MAX_LOAD"],
-        device=cfg["DEVICE"],
-        params=cfg,
+
+def setup_reproducibility(seed: int) -> None:
+    """
+    Set random seeds for reproducible results across different runs.
+
+    Args:
+        seed: Random seed value
+    """
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    logger.info(f"Random seeds set to: {seed}")
+
+
+def initialize_test_problem(
+    config: Dict[str, Any], device: str
+) -> Tuple[CVRP, torch.Tensor]:
+    """
+    Initialize test problem instance with pre-generated data.
+
+    Args:
+        config: Configuration dictionary
+        device: Compute device string
+
+    Returns:
+        Tuple of (test_problem_instance, initial_test_solutions)
+    """
+    # Load test problem parameters
+    test_dim = config["TEST_DIMENSION"]
+    n_test_problems = config["TEST_NB_PROBLEMS"]
+    problem_path = f"generated_problem/gen{test_dim}.pt"
+
+    try:
+        test_data = torch.load(problem_path, map_location="cpu")
+        logger.info(f"Loaded test data from: {problem_path}")
+    except FileNotFoundError:
+        logger.error(f"Test data file not found: {problem_path}")
+        raise
+
+    # Randomly select test problem indices
+    indices = torch.randperm(n_test_problems, generator=torch.Generator())
+    coordinates = test_data["node_coords"][indices]
+    demands = test_data["demands"][indices]
+    capacities = test_data["capacity"][indices]
+
+    # Initialize test problem instance
+    test_problem = CVRP(
+        dim=test_dim,
+        n_problems=capacities.shape[0],
+        capacities=capacities,
+        device=device,
+        params=config,
     )
-    problem.manual_seed(cfg["SEED"])
-    problem.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
+    test_problem.manual_seed(0)
 
-    dim_test = cfg["TEST_DIMENSION"]
-    n_test_pb = cfg["TEST_NB_PROBLEMS"]  # Number of test problems
-    path = f"generated_problem/gen{dim_test}.pt"
-    bdd = torch.load(path, map_location="cpu")
+    # Generate and set problem parameters
+    test_params = test_problem.generate_params("test", True, coordinates, demands)
+    test_problem.set_params(test_params)
 
-    # Randomly select n_test_pb indices based on the seed
-    indices = torch.randperm(n_test_pb, generator=torch.Generator())
-    coords = bdd["node_coords"][indices]
-    demands = bdd["demands"][indices]
-    capacities = bdd["capacity"][indices]
-    problem_test = CVRP(
-        dim_test,
-        capacities.shape[0],  # Number of problems
-        capacities,
-        device=cfg["DEVICE"],
-        params=cfg,
-    )
-    problem_test.manual_seed(0)
-    # Generate new problem instances
-    params = problem_test.generate_params("test", True, coords, demands)
-    problem_test.set_params(params)
-    if cfg["CHANGE_INIT_METHOD"]:
-        init_test = "isolate"
-    else:
-        init_test = cfg["INIT"]
-    init_x_test = problem_test.generate_init_x(init_test)
-    problem_test.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
-    init_cost = torch.mean(problem_test.cost(init_x_test))
+    # Generate initial solutions
+    init_method = "isolate" if config["CHANGE_INIT_METHOD"] else config["INIT"]
+    initial_test_solutions = test_problem.generate_init_x(init_method)
+
+    # Set heuristic method
+    test_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
+
+    # Log test problem statistics
+    initial_cost = torch.mean(test_problem.cost(initial_test_solutions))
     logger.info(
-        "Test problem initialized with params: "
-        f"PROBLEM_DIM={dim_test}, "
-        f"N_PROBLEMS={n_test_pb}, "
-        f"Initial cost: {init_cost.item():.3f}"
+        f"Test problem initialized - Dimension: {test_dim}, "
+        f"Problems: {n_test_problems}, Initial cost: {initial_cost.item():.3f}"
     )
 
-    # Initialize models
-    if cfg["PAIRS"]:
+    return test_problem, initial_test_solutions
+
+
+def initialize_models(
+    config: Dict[str, Any], device: str
+) -> Tuple[torch.nn.Module, torch.nn.Module]:
+    """
+    Initialize actor and critic neural networks.
+
+    Args:
+        config: Configuration dictionary
+        device: Compute device string
+
+    Returns:
+        Tuple of (actor_model, critic_model)
+    """
+    # Determine if mixed heuristic is used
+    use_mixed_heuristic = config["HEURISTIC"] == "mix"
+
+    # Initialize actor model (with or without pairs)
+    if config["PAIRS"]:
         actor = CVRPActorPairs(
-            embed_dim=cfg["EMBEDDING_DIM"],
-            c=cfg["ENTRY"],
-            num_hidden_layers=cfg["NUM_H_LAYERS"],
-            device=cfg["DEVICE"],
-            mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
-            method=cfg["UPDATE_METHOD"],
+            embed_dim=config["EMBEDDING_DIM"],
+            c=config["ENTRY"],
+            num_hidden_layers=config["NUM_H_LAYERS"],
+            device=device,
+            mixed_heuristic=use_mixed_heuristic,
+            method=config["UPDATE_METHOD"],
         )
     else:
         actor = CVRPActor(
-            embed_dim=cfg["EMBEDDING_DIM"],
-            c=cfg["ENTRY"],
-            num_hidden_layers=cfg["NUM_H_LAYERS"],
-            device=cfg["DEVICE"],
-            mixed_heuristic=True if cfg["HEURISTIC"] == "mix" else False,
-            method=cfg["UPDATE_METHOD"],
+            embed_dim=config["EMBEDDING_DIM"],
+            c=config["ENTRY"],
+            num_hidden_layers=config["NUM_H_LAYERS"],
+            device=device,
+            mixed_heuristic=use_mixed_heuristic,
+            method=config["UPDATE_METHOD"],
         )
+
+    actor.manual_seed(config["SEED"])
     logger.info(f"Actor model initialized: {actor.__class__.__name__}")
-    actor.manual_seed(cfg["SEED"])
+
+    # Initialize critic model
     critic = CVRPCritic(
-        embed_dim=cfg["EMBEDDING_DIM"],
-        c=cfg["ENTRY"],
-        num_hidden_layers=cfg["NUM_H_LAYERS"],
-        device=cfg["DEVICE"],
+        embed_dim=config["EMBEDDING_DIM"],
+        c=config["ENTRY"],
+        num_hidden_layers=config["NUM_H_LAYERS"],
+        device=device,
     )
+    logger.info("Critic model initialized")
+
+    return actor, critic
+
+
+def main(config: Dict[str, Any]) -> None:
+    """
+    Main training loop for CVRP optimization using PPO and Simulated Annealing.
+
+    Args:
+        config: Configuration dictionary containing all hyperparameters
+    """
+    # Setup device and reproducibility
+    device = setup_device_and_logging(config)
+    config["DEVICE"] = device
+    setup_reproducibility(config["SEED"])
+
+    # Initialize training problem environment
+    training_problem = CVRP(
+        dim=config["PROBLEM_DIM"],
+        n_problems=config["N_PROBLEMS"],
+        capacities=config["MAX_LOAD"],
+        device=device,
+        params=config,
+    )
+    training_problem.manual_seed(config["SEED"])
+    training_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
+
+    # Initialize test problem environment
+    test_problem, initial_test_solutions = initialize_test_problem(config, device)
+
+    # Initialize neural network models
+    actor, critic = initialize_models(config, device)
+
     # Initialize optimizers
-    actor_opt = torch.optim.Adam(
-        actor.parameters(), lr=cfg["LR"], weight_decay=cfg["WEIGHT_DECAY"]
+    actor_optimizer = torch.optim.Adam(
+        actor.parameters(), lr=config["LR"], weight_decay=config["WEIGHT_DECAY"]
     )
-    critic_opt = torch.optim.Adam(
-        critic.parameters(), lr=cfg["LR"], weight_decay=cfg["WEIGHT_DECAY"]
+    critic_optimizer = torch.optim.Adam(
+        critic.parameters(), lr=config["LR"], weight_decay=config["WEIGHT_DECAY"]
     )
-    logger.info("Training started.")
-    # Training loop
-    test_init = test_model(
-        actor,
-        problem_test,
-        init_x_test,
-        cfg,
-    )
-    train_loss = torch.mean(test_init["min_cost"])
-    logger.info(f"Initial test loss: {train_loss:.4f}")
 
+    logger.info("Training initialization completed")
+
+    # Perform initial test to establish baseline
+    initial_test_results = test_model(
+        actor, test_problem, initial_test_solutions, config
+    )
+    current_test_loss = torch.mean(initial_test_results["min_cost"])
+    logger.info(f"Initial test loss: {current_test_loss:.4f}")
+
+    # Early stopping variables
     early_stopping_counter = 0
-    early_stop_value = float("inf")
+    best_loss_value = float("inf")
+
     logger.info(
-        f"Starting training loop with INIT method: {cfg['INIT']}, CLUSTERING: "
-        f"{cfg['CLUSTERING']}",
+        f"Starting training - INIT method: {config['INIT']}, "
+        f"CLUSTERING: {config['CLUSTERING']}"
     )
-    with tqdm(range(cfg["N_EPOCHS"]), unit="epoch", colour="blue") as progress_bar:
+
+    # Clear GPU memory before training
+    if training_problem.device == "cuda":
+        torch.cuda.empty_cache()
+
+    # Main training loop
+    with tqdm(range(config["N_EPOCHS"]), unit="epoch", colour="blue") as progress_bar:
         for epoch in progress_bar:
-            # for epoch in range(cfg["N_EPOCHS"]):
-            # Generate new problem instances
-            params = problem.generate_params()
-            params = {k: v.to(cfg["DEVICE"]) for k, v in params.items()}
-            problem.set_params(params)
+            # Generate new training problem instances
+            training_params = training_problem.generate_params()
+            training_params = {k: v.to(device) for k, v in training_params.items()}
+            training_problem.set_params(training_params)
 
-            # Get initial solutions
-            init_x = problem.generate_init_x(cfg["INIT"])
+            # Generate initial solutions for training
+            initial_training_solutions = training_problem.generate_init_x(
+                config["INIT"]
+            )
 
-            # Training phase
-            train_results = train_ppo(
-                actor,
-                critic,
-                actor_opt,
-                critic_opt,
-                problem,
-                init_x,
-                cfg,
+            # Execute training step
+            training_results = train_ppo(
+                actor=actor,
+                critic=critic,
+                actor_optimizer=actor_optimizer,
+                critic_optimizer=critic_optimizer,
+                problem=training_problem,
+                initial_solutions=initial_training_solutions,
+                config=config,
                 step=epoch + 1,
             )
-            (
-                train_in,
-                actor_loss,
-                critic_loss,
-                avg_actor_grad,
-                avg_critic_grad,
-            ) = train_results
-            # Test phase every 10 epochs
+
+            # Unpack training results
+            (sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad) = (
+                training_results
+            )
+
+            # Periodic testing and evaluation
+            test_results = None
             if epoch % 10 == 0 and epoch != 0:
-                test = test_model(
-                    actor,
-                    problem_test,
-                    init_x_test,
-                    cfg,
+                test_results = test_model(
+                    actor, test_problem, initial_test_solutions, config
                 )
-                train_loss = torch.mean(test["min_cost"])
-                # logger.info(f"Epoch {epoch}: Loss: {train_loss:.4f}")
-                # Inverse clustering flag for next 10 epoch
-                if cfg["ALT_CLUSTERING"]:
-                    problem.clustering = not problem.clustering
-                    if cfg["VERBOSE"]:
+                current_test_loss = torch.mean(test_results["min_cost"])
+
+                # Toggle clustering if alternating clustering is enabled
+                if config["ALT_CLUSTERING"]:
+                    training_problem.clustering = not training_problem.clustering
+                    if config["VERBOSE"]:
                         logger.info(
-                            f"Clustering set to {problem.clustering} at epoch {epoch}"
-                        )
-                    if problem.clustering:
-                        problem.nb_clusters_max = random.randint(
-                            2, cfg["NB_CLUSTERS_MAX"]
+                            f"Clustering toggled to {training_problem.clustering}"
                         )
 
-            if cfg["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
-                cfg["INIT"] = cfg["INIT_LIST"][(epoch // 5) % len(cfg["INIT_LIST"])]
-                if cfg["VERBOSE"]:
-                    logger.info(
-                        f"Changed INIT method to {cfg['INIT']} at epoch {epoch}"
-                    )
-            # Logging
-            if cfg["LOG"]:
+                    # Set random number of clusters if clustering is enabled
+                    if training_problem.clustering:
+                        training_problem.nb_clusters_max = random.randint(
+                            2, config["NB_CLUSTERS_MAX"]
+                        )
+
+            # Change initialization method periodically if enabled
+            if config["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
+                init_index = (epoch // 5) % len(config["INIT_LIST"])
+                config["INIT"] = config["INIT_LIST"][init_index]
+                if config["VERBOSE"]:
+                    logger.info(f"Changed INIT method to {config['INIT']}")
+
+            # Log metrics to WandB
+            if config["LOG"]:
                 log_training_and_test_metrics(
-                    actor_loss,
-                    critic_loss,
-                    avg_actor_grad,
-                    avg_critic_grad,
-                    test if (epoch != 0 and epoch >= 10) else test_init,
-                    epoch,
-                    cfg,
+                    actor_loss=actor_loss,
+                    critic_loss=critic_loss,
+                    avg_actor_grad=avg_actor_grad,
+                    avg_critic_grad=avg_critic_grad,
+                    test_results=(
+                        test_results if (epoch >= 10) else initial_test_results
+                    ),
+                    epoch=epoch,
+                    config=config,
                 )
 
             # Update progress bar
-            progress_bar.set_description(f"Training loss: {train_loss:.4f}")
+            progress_bar.set_description(f"Test loss: {current_test_loss:.4f}")
 
             # Model checkpointing
-            if cfg["LOG"]:
-                model_name = f"{cfg['PROJECT']}_{cfg['GROUP']}_actor"
-                saved, path = WandbLogger.log_model(
+            if config["LOG"]:
+                model_name = f"{config['PROJECT']}_{config['GROUP']}_actor"
+                WandbLogger.log_model(
                     save_func=save_model,
                     model=actor,
-                    val_loss=(train_loss.item()),
+                    val_loss=current_test_loss.item(),
                     epoch=epoch,
                     model_name=model_name,
                 )
+
+            # Early stopping logic
             if epoch % 10 == 0:
-                if train_loss.item() >= early_stop_value:
+                if current_test_loss.item() >= best_loss_value:
                     early_stopping_counter += 1
-                    if cfg["VERBOSE"]:
-                        logger.info(
-                            f"Epoch {epoch}: Early stopping counter: "
-                            f"{early_stopping_counter}"
-                        )
+                    if config["VERBOSE"]:
+                        logger.info(f"Early stopping counter: {early_stopping_counter}")
                 else:
                     early_stopping_counter = 0
-                    early_stop_value = min(train_loss.item(), early_stop_value)
+                    best_loss_value = min(current_test_loss.item(), best_loss_value)
 
-            if early_stopping_counter > 5:
-                logger.warning(
-                    f"Early stopping triggered at epoch {epoch} "
-                    f"with loss {early_stop_value:.4f}"
-                )
-                break
+                # Trigger early stopping if no improvement for too long
+                if early_stopping_counter > 5:
+                    logger.warning(
+                        f"Early stopping triggered at epoch {epoch} "
+                        f"with loss {best_loss_value:.4f}"
+                    )
+                    break
+
+    logger.info("Training completed successfully")
 
 
 if __name__ == "__main__":
-    if profiler:
-        # Launch profiling and save results to 'profile_results.prof'
-
+    if ENABLE_PROFILER:
+        # Profile the main function execution
         profiler = cProfile.Profile()
         profiler.enable()
 
-        main(cfg)  # Main function call
-        logger.info("Training completed successfully.")
+        main(config)
 
         profiler.disable()
-
-        # Save the results
         profiler.dump_stats("profile_results.prof")
 
-        # Optional: Display a summary in the console
+        # Display profiling summary
         stream = io.StringIO()
         stats = pstats.Stats(profiler, stream=stream)
         stats.strip_dirs().sort_stats("cumtime").print_stats(20)
         print(stream.getvalue())
+
+        logger.info("Profiled training completed successfully")
     else:
-        main(cfg)  # Main function call
-        logger.info("Training completed successfully.")
+        main(config)
+        logger.info("Training completed successfully")

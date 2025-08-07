@@ -127,14 +127,18 @@ def generate_action(
     greedy: bool,
     random_std: float,
     problem: Problem,
+    device: torch.device,
 ):
     """Generate action from policy or baseline."""
-    if baseline:
-        return actor.baseline_sample(
-            current_state, random_std=random_std, problem=problem
-        )
-    else:
-        return actor.sample(current_state, greedy=greedy, problem=problem)
+    with torch.no_grad():
+        with torch.amp.autocast(device.type):
+            if baseline:
+                res = actor.baseline_sample(
+                    current_state, random_std=random_std, problem=problem
+                )
+            else:
+                res = actor.sample(current_state, greedy=greedy, problem=problem)
+    return res
 
 
 def process_heuristic_action(action: torch.Tensor, config: dict, tracking: dict):
@@ -430,7 +434,7 @@ def sa_train(
 
             # Generate action from policy
             action, action_log_prob = generate_action(
-                actor, current_state, baseline, greedy, random_std, problem
+                actor, current_state, baseline, greedy, random_std, problem, device
             )
 
             # Process heuristic tracking
