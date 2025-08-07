@@ -38,9 +38,9 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "baseline_methods_2"
-rapid = True  # Set to True for faster execution, False for full evaluation
-dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
+FOLDER = "ARCH_MODEL_UPDATE_METHOD_HEURISTIC_SCHEDULER"
+rapid = False  # Set to True for faster execution, False for full evaluation
+dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
 
 if dim not in [50, 100, 500, 1000]:
@@ -53,14 +53,15 @@ else:
     logger.info(f"Running evaluation on {BDD_PATH}")
 
 # Constants
+BASE_PATH = "res/" + FOLDER + "/"
+if not os.path.exists(BASE_PATH):
+    os.makedirs(BASE_PATH, exist_ok=True)
 PATH = "wandb/Neural_Simulated_Annealing/"
-RESULTS_FILE_ALL_MODEL = (
-    "res/res_all_model_rapid.csv" if rapid else f"res/res_all_model_{dim}.csv"
+RESULTS_FILE_ALL_MODEL = BASE_PATH + (
+    "res_all_model_rapid.csv" if rapid else f"res_all_model_{dim}.csv"
 )
 RESULTS_FILE = (
-    PATH + FOLDER + "/res_model_rapid.csv"
-    if rapid
-    else PATH + FOLDER + f"/res_model_{dim}.csv"
+    BASE_PATH + "res_model_rapid.csv" if rapid else BASE_PATH + f"res_model_{dim}.csv"
 )
 MODEL_NAMES = glob2.glob(os.path.join(PATH, FOLDER, "models", "*"))
 
@@ -85,8 +86,8 @@ cfg = {
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    "INIT": "nearest_neighbor",
-    "CLUSTERING": False,
+    # "INIT": "nearest_neighbor",
+    # "CLUSTERING": False,
     "SEED": 0,
     "LOAD_PB": False if rapid else True,
 }
@@ -137,15 +138,17 @@ def perform_test(
     # Initialize models
     if HP["PAIRS"]:
         actor = CVRPActorPairs(
-            HP["EMBEDDING_DIM"],
+            embed_dim=HP["EMBEDDING_DIM"],
+            c=HP["ENTRY"],
             num_hidden_layers=HP["NUM_H_LAYERS"],
             device=HP["DEVICE"],
             mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
+            method=HP["UPDATE_METHOD"],
         )
     else:
         actor = CVRPActor(
-            HP["EMBEDDING_DIM"],
-            HP["ENTRY"],
+            embed_dim=HP["EMBEDDING_DIM"],
+            c=HP["ENTRY"],
             num_hidden_layers=HP["NUM_H_LAYERS"],
             device=HP["DEVICE"],
             mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
