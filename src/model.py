@@ -170,12 +170,12 @@ class CVRPActorPairs(SAModel):
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
-
-        if state.shape[0]*state.shape[1] > 1000 * 161:
+        step = 1000
+        if state.shape[0] * state.shape[1] > 1000 * 161:
             actions = []
             log_probs_list = []
-            for i in range(0, state.shape[0], 1000):
-                chunk = state[i : i + 1000]
+            for i in range(0, state.shape[0], step):
+                chunk = state[i : i + step]
                 pair_features, idx1, idx2 = self._prepare_features_and_pairs(chunk)
                 logits = self.forward(pair_features)[..., 0]  # Forward pass
 
@@ -194,6 +194,11 @@ class CVRPActorPairs(SAModel):
 
                 actions.append(action)
                 log_probs_list.append(log_probs)
+
+                # explicitly free memory
+                del pair_features, idx1, idx2, logits, c
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # Stack results from all chunks
             action = torch.cat(actions, dim=0)

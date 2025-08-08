@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore")
 # TO FILL
 ###########################################################################
 FOLDER = "ARCH_MODEL_UPDATE_METHOD_HEURISTIC_SCHEDULER"
-rapid = False  # Set to True for faster execution, False for full evaluation
+rapid = True  # Set to True for faster execution, False for full evaluation
 dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
 
@@ -77,10 +77,10 @@ else:
 
 # Configuration
 cfg = {
-    "PROBLEM_DIM": 100 if rapid else coords.shape[1] - 1,
+    "PROBLEM_DIM": 50 if rapid else coords.shape[1] - 1,
     "N_PROBLEMS": 1000 if rapid else capacities.shape[0],
     "OUTER_STEPS": 2000 if rapid else 10000,
-    "MAX_LOAD": 50,
+    "MAX_LOAD": 20,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()

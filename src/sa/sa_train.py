@@ -138,6 +138,8 @@ def generate_action(
                 )
             else:
                 res = actor.sample(current_state, greedy=greedy, problem=problem)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     return res
 
 

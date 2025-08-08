@@ -2,8 +2,7 @@
 LOG: 
 - True 
 
-GROUP: 
-- "INIT_METHODS"
-
-CHANGE_INIT_METHOD: 
-- True  
+NUM_H_LAYERS : 
+- 0
+- 1
+- 2

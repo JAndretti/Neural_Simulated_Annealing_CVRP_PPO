@@ -76,6 +76,34 @@ def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
     return (value - min_value) / (max_value - min_value)
 
 
+# ================================
+# ACTION GENERATION AND PROCESSING
+# ================================
+
+
+def generate_action(
+    actor: SAModel,
+    current_state: torch.Tensor,
+    baseline: bool,
+    greedy: bool,
+    random_std: float,
+    problem: Problem,
+    device: torch.device,
+):
+    """Generate action from policy or baseline."""
+    with torch.no_grad():
+        with torch.amp.autocast(device.type):
+            if baseline:
+                res = actor.baseline_sample(
+                    current_state, random_std=random_std, problem=problem
+                )
+            else:
+                res = actor.sample(current_state, greedy=greedy, problem=problem)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return res
+
+
 def sa_test(
     actor: SAModel,
     problem: Problem,
@@ -172,9 +200,12 @@ def sa_test(
     ):
         # Inner loop at fixed temperature
         for inner_step in range(config["INNER_STEPS"]):
-            action, action_log_prob = actor.sample(
-                current_state, greedy=greedy, problem=problem
+            # Generate action from policy
+            action, action_log_prob = generate_action(
+                actor, current_state, baseline, greedy, random_std, problem, device
             )
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             # Generate proposed solution
             solution_components, *_ = problem.from_state(current_state)
             proposed_solution, is_valid = problem.update(solution_components, action)
