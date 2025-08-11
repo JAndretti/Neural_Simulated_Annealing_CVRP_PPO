@@ -12,6 +12,7 @@ from heur_init import (
     generate_Clark_and_Wright,
     generate_sweep_solution,
     generate_nearest_neighbor,
+    vrp_optimal_split,
 )
 
 
@@ -264,12 +265,19 @@ if __name__ == "__main__":
     start_time = time.time()
 
     best_solutions = run_simulated_annealing(init_x, problem, sa_params)
+    time_TSP = time.time() - start_time
 
+    start_time = time.time()
     sol_split = construct_cvrp_solution(
         best_solutions, problem.demands, problem.capacity
     )
+    time_split = time.time() - start_time + time_TSP
 
-    time_split = time.time() - start_time
+    start_time = time.time()
+    sol_opt_split = vrp_optimal_split(
+        problem.coords, problem.demands, problem.capacity, best_solutions.squeeze(-1)
+    ).to(problem.device)
+    time_opt_split = time.time() - start_time + time_TSP
 
     start_time = time.time()
     sol_CW = generate_Clark_and_Wright(problem).to(problem.device)
@@ -282,19 +290,28 @@ if __name__ == "__main__":
     time_nn = time.time() - start_time
 
     cost_split = problem.cost(sol_split)
+    cost_opt_split = problem.cost(sol_opt_split)
     cost_CW = problem.cost(sol_CW)
     cost_sweep = problem.cost(sol_sweep)
     cost_nn = problem.cost(sol_nn)
 
     print(f"Cost of split solution: {cost_split.mean().item()}")
+    print(f"Cost of optimal split solution: {cost_opt_split.mean().item()}")
     print(f"Cost of initial solution: {cost_CW.mean().item()}")
     print(f"Cost of sweep solution: {cost_sweep.mean().item()}")
     print(f"Cost of nearest neighbor solution: {cost_nn.mean().item()}")
 
     # Prepare data for the bar plot
-    methods = ["Split TSP", "Clark & Wright", "Sweep", "Nearest Neighbor"]
+    methods = [
+        "Split TSP",
+        "Optimal Split TSP",
+        "Clark & Wright",
+        "Sweep",
+        "Nearest Neighbor",
+    ]
     costs = [
         cost_split.mean().item(),
+        cost_opt_split.mean().item(),
         cost_CW.mean().item(),
         cost_sweep.mean().item(),
         cost_nn.mean().item(),
@@ -302,7 +319,9 @@ if __name__ == "__main__":
 
     # Create the bar plot
     plt.figure(figsize=(8, 6))
-    plt.bar(methods, costs, color=["blue", "orange", "green", "red"], alpha=0.7)
+    plt.bar(
+        methods, costs, color=["blue", "purple", "orange", "green", "red"], alpha=0.7
+    )
 
     # Add labels and title
     plt.xlabel("Methods", fontsize=14)
@@ -311,7 +330,7 @@ if __name__ == "__main__":
     plt.grid(axis="y", linestyle="--", alpha=0.6)
 
     # Add value annotations on top of the bars
-    for i, t in enumerate([time_split, time_CW, time_sweep, time_nn]):
+    for i, t in enumerate([time_split, time_opt_split, time_CW, time_sweep, time_nn]):
         plt.text(i, costs[i] + 0.25, f"{t:.2f}s", ha="center", fontsize=11)
 
     # Show the plot

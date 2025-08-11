@@ -38,8 +38,8 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "ARCH_MODEL_UPDATE_METHOD_HEURISTIC_SCHEDULER"
-rapid = True  # Set to True for faster execution, False for full evaluation
+FOLDER = "INIT"
+rapid = False  # Set to True for faster execution, False for full evaluation
 dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
 

@@ -37,11 +37,20 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "INIT_METHODS"
+FOLDER = "INIT"
 rapid = False  # Set to True for faster execution, False for full evaluation
-dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
+dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 cv_key = "INIT"
-cv_val = ["random", "isolate", "sweep", "Clark_and_Wright", "nearest_neighbor"]
+cv_val = [
+    "random",
+    "isolate",
+    "sweep",
+    "Clark_and_Wright",
+    "nearest_neighbor",
+    "cheapest_insertion",
+    "path_cheapest_arc",
+    "farthest_insertion",
+]
 ###########################################################################
 
 if dim not in [50, 100, 500, 1000]:
