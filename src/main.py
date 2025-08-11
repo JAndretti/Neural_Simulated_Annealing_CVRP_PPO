@@ -153,7 +153,8 @@ def save_model(path: str, actor_model: Optional[torch.nn.Module] = None) -> None
     """
     if actor_model is not None:
         torch.save(actor_model.state_dict(), path)
-        logger.info(f"Model saved to: {path}")
+        if config["VERBOSE"]:
+            logger.info(f"Model saved to: {path}")
     else:
         raise ValueError("No model provided for saving")
 
