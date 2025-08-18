@@ -22,6 +22,8 @@ profiling/
 **.png
 **.jpg
 
+**.sh
+
 # Res files
 /res/**
 !/res/Vrp-Set-XML100_res.csv
