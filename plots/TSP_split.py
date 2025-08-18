@@ -173,7 +173,7 @@ def setup_config(coords, capacities):
         "N_PROBLEMS": capacities.shape[0],
         "OUTER_STEPS": 10000,
         "MAX_LOAD": 50,
-        "DEVICE": "cpu",
+        "DEVICE": "cuda",
         "SEED": 0,
         "LOAD_PB": True,
         "CLUSTERING": False,
@@ -236,7 +236,7 @@ if __name__ == "__main__":
 
     # SA parameters
     sa_params = {
-        "initial_temp": 9_000,
+        "initial_temp": 10_000,
         "cooling_rate": 0.999,
         "min_temp": 0.00001,
         "max_iter": 1_000_000,
@@ -244,7 +244,7 @@ if __name__ == "__main__":
 
     sa_params_model = {
         "initial_temp": 1,
-        "cooling_rate": 0.99,
+        "cooling_rate": 0.999,
         "min_temp": 0.01,
         "max_iter": 1_000_000,
     }
@@ -254,7 +254,7 @@ if __name__ == "__main__":
 
     # Setup configuration
     cfg = setup_config(coords, capacities)
-
+    TSP_actor.to(cfg["DEVICE"])
     # Initialize problem
     problem, init_x = initialize_problem(cfg, coords, demands, capacities)
 
@@ -263,6 +263,7 @@ if __name__ == "__main__":
 
     best_solutions = run_simulated_annealing(init_x, problem, sa_params)
     time_TSP = time.time() - start_time
+    print(f"SA time : {time_TSP:.2f} seconds")
 
     start_time = time.time()
     sol_split = construct_cvrp_solution(
@@ -272,8 +273,11 @@ if __name__ == "__main__":
 
     start_time = time.time()
     sol_opt_split = vrp_optimal_split(
-        problem.coords, problem.demands, problem.capacity, best_solutions.squeeze(-1)
-    ).to(problem.device)
+        problem.coords.to("cpu"),
+        problem.demands.to("cpu"),
+        problem.capacity.to("cpu"),
+        best_solutions.squeeze(-1).to("cpu"),
+    ).to(cfg["DEVICE"])
     time_opt_split = time.time() - start_time + time_TSP
 
     # Run simulated annealing
@@ -284,6 +288,8 @@ if __name__ == "__main__":
     )
     time_TSP_actor = time.time() - start_time
 
+    print(f"NSA time : {time_TSP_actor:.2f} seconds")
+
     start_time = time.time()
     sol_split_model = construct_cvrp_solution(
         best_solutions_actor, problem.demands, problem.capacity
@@ -292,11 +298,11 @@ if __name__ == "__main__":
 
     start_time = time.time()
     sol_opt_split_model = vrp_optimal_split(
-        problem.coords,
-        problem.demands,
-        problem.capacity,
-        best_solutions_actor.squeeze(-1),
-    ).to(problem.device)
+        problem.coords.to("cpu"),
+        problem.demands.to("cpu"),
+        problem.capacity.to("cpu"),
+        best_solutions_actor.squeeze(-1).to("cpu"),
+    ).to(cfg["DEVICE"])
     time_opt_split_model = time.time() - start_time + time_TSP_actor
 
     start_time = time.time()

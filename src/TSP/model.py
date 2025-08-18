@@ -248,7 +248,7 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> TSPActor:
     Returns:
         TSPActor: The loaded TSPActor model in evaluation mode.
     """
-    model = TSPActor(32, "cpu")
+    model = TSPActor(32, device)
     model.load_state_dict(
         torch.load(
             checkpoint_path,

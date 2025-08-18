@@ -1,6 +1,9 @@
 import torch
 import collections
 from tqdm import tqdm
+import multiprocessing as mp
+
+import os
 
 # Padding multiplier for route tensors (60% extra space for depot visits)
 MULT = 0.6
@@ -449,7 +452,7 @@ def construct_cvrp_solution(
     remaining_capacity = capacity.long()
     route_pos = torch.zeros(batch_size, dtype=torch.long, device=device)
 
-    for i in range(num_nodes):
+    for i in tqdm(range(num_nodes), desc="Constructing CVRP Solution", leave=False):
         current_client = x[:, i]
         can_serve = ordered_demands[:, i] <= remaining_capacity
 
@@ -587,9 +590,106 @@ def generate_nearest_neighbor(cvrp_instance):
     return routes.unsqueeze(-1)
 
 
+def _clark_wright_worker(args):
+    """
+    Worker function for parallel processing of Clarke and Wright algorithm.
+
+    Args:
+        args: Tuple containing (batch_index, coords, demands, capacity, dim)
+
+    Returns:
+        Tuple of (batch_index, flattened_route)
+    """
+    batch_index, coords, demands, capacity, dim = args
+    device = "cpu"
+
+    # Compute distance matrix for single batch
+    coords_i = coords.unsqueeze(1)
+    coords_j = coords.unsqueeze(0)
+    dist = torch.norm(coords_i - coords_j, dim=2)
+
+    # Compute savings matrix
+    d0i = dist[0, 1:]  # [dim]
+    d0j = dist[0, 1:]  # [dim]
+    dij = dist[1:, 1:]  # [dim, dim]
+    savings = d0i.unsqueeze(1) + d0j.unsqueeze(0) - dij  # [dim, dim]
+    # Set diagonal to -inf to avoid merging a node with itself
+    savings = savings + torch.diag(torch.full((dim,), float("-inf"), device=device))
+
+    # Get sorted savings indices (descending)
+    savings_flat = savings.view(-1)
+    sorted_savings, sorted_idx = torch.sort(savings_flat, descending=True)
+    # Map flat indices back to (i, j)
+    i_idx = sorted_idx // dim
+    j_idx = sorted_idx % dim
+    # Convert to global node indices (clients are 1..dim)
+    i_idx = i_idx + 1
+    j_idx = j_idx + 1
+
+    # Initialize routes: each client in its own route [0, i, 0]
+    routes = [[0, i + 1, 0] for i in range(dim)]
+    route_demands = [demands[i + 1].item() for i in range(dim)]
+    # Track which route each client is in
+    client_route = {i + 1: i for i in range(dim)}
+
+    # Try to merge routes according to savings
+    for k in range(dim * dim):
+        i = i_idx[k].item()
+        j = j_idx[k].item()
+        if i == j:
+            continue
+        route_i = client_route.get(i, None)
+        route_j = client_route.get(j, None)
+        if route_i is None or route_j is None or route_i == route_j:
+            continue
+        # Check if i is at the end of its route and j at the start of its route
+        route_i_seq = routes[route_i]
+        route_j_seq = routes[route_j]
+        if route_i_seq[-2] == i and route_j_seq[1] == j:
+            total_demand = route_demands[route_i] + route_demands[route_j]
+            if total_demand <= capacity.item():
+                # Merge route_i and route_j
+                new_route = route_i_seq[:-1] + route_j_seq[1:]
+                routes[route_i] = new_route
+                route_demands[route_i] = total_demand
+                # Remove route_j
+                routes[route_j] = []
+                route_demands[route_j] = 0
+                # Update client_route mapping
+                for node in route_j_seq[1:-1]:
+                    client_route[node] = route_i
+                continue
+        # Also check the reverse: j at end, i at start
+        if route_j_seq[-2] == j and route_i_seq[1] == i:
+            total_demand = route_demands[route_i] + route_demands[route_j]
+            if total_demand <= capacity.item():
+                new_route = route_j_seq[:-1] + route_i_seq[1:]
+                routes[route_j] = new_route
+                route_demands[route_j] = total_demand
+                routes[route_i] = []
+                route_demands[route_i] = 0
+                for node in route_i_seq[1:-1]:
+                    client_route[node] = route_j
+                continue
+
+    # Collect non-empty routes and flatten
+    flat = []
+    for r in routes:
+        if r:
+            if flat and flat[-1] != 0:
+                flat.append(0)
+            flat += r[1:] if flat else r
+    # Ensure route starts at depot
+    if not flat or flat[0] != 0:
+        flat = [0] + flat
+
+    return batch_index, flat
+
+
 def generate_Clark_and_Wright(cvrp_instance):
     """
-    Generate initial CVRP solutions using the Clarke and Wright Savings Algorithm.
+    Generate initial CVRP solutions using the Clarke and Wright Savings Algorithm
+    (Parallelized).
 
     This algorithm works by:
     1. Initially creating N separate routes (depot-client-depot) for each client
@@ -610,101 +710,48 @@ def generate_Clark_and_Wright(cvrp_instance):
     demands = cvrp_instance.demands.cpu()
     capacity = cvrp_instance.capacity.squeeze(-1).cpu()
 
-    # Compute distance matrix [batch, num_nodes, num_nodes]
-    coords_i = coords.unsqueeze(2)
-    coords_j = coords.unsqueeze(1)
-    dist = torch.norm(coords_i - coords_j, dim=3)
+    # Determine number of processes (use all available CPU cores)
+    num_processes = min(batch_size, os.cpu_count())
 
-    # Compute savings matrix for each batch [batch, dim, dim]
-    # Savings S_ij = d_{0i} + d_{0j} - d_{ij}
-    d0i = dist[:, 0, 1:]  # [batch, dim]
-    d0j = dist[:, 0, 1:]  # [batch, dim]
-    dij = dist[:, 1:, 1:]  # [batch, dim, dim]
-    savings = d0i.unsqueeze(2) + d0j.unsqueeze(1) - dij  # [batch, dim, dim]
-    # Set diagonal to -inf to avoid merging a node with itself
-    savings = savings + torch.diag_embed(
-        torch.full((batch_size, dim), float("-inf"), device=device)
-    )
+    # Prepare arguments for parallel processing
+    args_list = []
+    for b in range(batch_size):
+        args_list.append((b, coords[b], demands[b], capacity[b], dim))
 
-    # For each batch, get sorted savings indices (descending)
-    savings_flat = savings.view(batch_size, -1)
-    sorted_savings, sorted_idx = torch.sort(savings_flat, descending=True, dim=1)
-    # Map flat indices back to (i, j)
-    i_idx = sorted_idx // dim
-    j_idx = sorted_idx % dim
-    # Convert to global node indices (clients are 1..dim)
-    i_idx = i_idx + 1
-    j_idx = j_idx + 1
+    # Process in parallel
+    if num_processes > 1 and batch_size > 1:
+        with mp.Pool(processes=num_processes) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(_clark_wright_worker, args_list),
+                    total=batch_size,
+                    desc="Clark and Wright Init",
+                )
+            )
+    else:
+        # Sequential processing for small batches or single core
+        results = []
+        for args in tqdm(args_list, desc="Clark and Wright Init"):
+            results.append(_clark_wright_worker(args))
 
-    # Initialize routes: each client in its own route [0, i, 0]
-    routes = [[[0, i + 1, 0] for i in range(dim)] for _ in range(batch_size)]
-    route_demands = [
-        [demands[b, i + 1].item() for i in range(dim)] for b in range(batch_size)
-    ]
-    # Track which route each client is in
-    client_route = [{i + 1: i for i in range(dim)} for _ in range(batch_size)]
+    # Sort results by batch index to maintain order
+    results.sort(key=lambda x: x[0])
 
-    # Try to merge routes according to savings
-    for b in tqdm(range(batch_size), desc="Clark and Wright Init", leave=False):
-        for k in range(dim * dim):
-            i = i_idx[b, k].item()
-            j = j_idx[b, k].item()
-            if i == j:
-                continue
-            route_i = client_route[b].get(i, None)
-            route_j = client_route[b].get(j, None)
-            if route_i is None or route_j is None or route_i == route_j:
-                continue
-            # Check if i is at the end of its route and j at the start of its route
-            route_i_seq = routes[b][route_i]
-            route_j_seq = routes[b][route_j]
-            if route_i_seq[-2] == i and route_j_seq[1] == j:
-                total_demand = route_demands[b][route_i] + route_demands[b][route_j]
-                if total_demand <= capacity[b].item():
-                    # Merge route_i and route_j
-                    new_route = route_i_seq[:-1] + route_j_seq[1:]
-                    routes[b][route_i] = new_route
-                    route_demands[b][route_i] = total_demand
-                    # Remove route_j
-                    routes[b][route_j] = []
-                    route_demands[b][route_j] = 0
-                    # Update client_route mapping
-                    for node in route_j_seq[1:-1]:
-                        client_route[b][node] = route_i
-                    continue
-            # Also check the reverse: j at end, i at start
-            if route_j_seq[-2] == j and route_i_seq[1] == i:
-                total_demand = route_demands[b][route_i] + route_demands[b][route_j]
-                if total_demand <= capacity[b].item():
-                    new_route = route_j_seq[:-1] + route_i_seq[1:]
-                    routes[b][route_j] = new_route
-                    route_demands[b][route_j] = total_demand
-                    routes[b][route_i] = []
-                    route_demands[b][route_i] = 0
-                    for node in route_i_seq[1:-1]:
-                        client_route[b][node] = route_j
-                    continue
-
-    # Collect non-empty routes and flatten to padded tensor
+    # Collect routes and pad to uniform length
     max_route_len = num_total_nodes + int(num_total_nodes * MULT)
     batch_routes = torch.zeros(
         batch_size, max_route_len, dtype=torch.long, device=device
     )
-    for b in range(batch_size):
-        flat = []
-        for r in routes[b]:
-            if r:
-                if flat and flat[-1] != 0:
-                    flat.append(0)
-                flat += r[1:] if flat else r
-        # Ensure route starts at depot
-        if not flat or flat[0] != 0:
-            flat = [0] + flat
+
+    for batch_idx, flat_route in results:
         # Pad to max_route_len
-        flat = flat[:max_route_len] + [0] * (max_route_len - len(flat))
-        batch_routes[b, : len(flat)] = torch.tensor(
-            flat[:max_route_len], dtype=torch.long
+        flat_route = flat_route[:max_route_len] + [0] * (
+            max_route_len - len(flat_route)
         )
+        batch_routes[batch_idx, : len(flat_route)] = torch.tensor(
+            flat_route[:max_route_len], dtype=torch.long
+        )
+
     return batch_routes.unsqueeze(-1)
 
 
