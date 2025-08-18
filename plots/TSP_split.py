@@ -14,6 +14,7 @@ from heur_init import (
     generate_nearest_neighbor,
     vrp_optimal_split,
 )
+from TSP import get_features, TSP_actor
 
 
 def calculate_tour_distances(solutions, distance_matrices):
@@ -45,56 +46,37 @@ def calculate_tour_distances(solutions, distance_matrices):
     return tour_leg_distances.sum(dim=1)
 
 
-def two_opt(tours, i, j):
-    """
-    Applique un échange 2-opt à plusieurs tournées de manière vectorisée.
-    Inverse le segment de tournée entre les indices i et j (inclus).
+def two_opt(x: torch.Tensor, a: torch.Tensor):
+    """Swap cities a[0] <-> a[1].
 
     Args:
-        tours: Tenseur de forme [n_problems, n_nodes] représentant les tournées.
-        i, j: Tenseurs d'indices pour l'échange 2-opt, de forme [n_problems].
-
-    Returns:
-        new_tours: Tenseur avec les échanges 2-opt appliqués.
+        s: perm vector [batch size, coords]
+        a: cities to swap ([batch size], [batch size])
     """
-    # Obtenir les dimensions et le device depuis le tenseur d'entrée
-    n_problems, n_nodes = tours.shape
-    device = tours.device
-
-    # Déterminer les bornes gauche (l) et droite (r) pour chaque segment à inverser
-    left = torch.min(i, j)
-    right = torch.max(i, j)
-
-    # 1. Créer une matrice d'indices de base [0, 1, ..., n_nodes-1] pour chaque tournée
-    # Shape : [n_problems, n_nodes]
-    fwd_indices = (
-        torch.arange(n_nodes, device=device).unsqueeze(0).expand(n_problems, -1)
-    )
-
-    # 2. Créer la matrice des indices inversés
-    # La formule pour inverser un indice k dans un segment [left, right]
-    # est left + right - k
-    offset = (left + right).unsqueeze(1)
-    rev_indices = offset - fwd_indices
-
-    # 3. Créer un masque booléen pour le segment à inverser (bornes incluses)
-    # Le masque est True là où left <= index <= right
-    mask = (fwd_indices >= left.unsqueeze(1)) & (fwd_indices <= right.unsqueeze(1))
-
-    # 4. Construire l'index final pour l'opération gather
-    # On utilise les indices normaux là où le masque est False
-    # et les indices inversés là où le masque est True.
-    final_indices = torch.where(mask, rev_indices, fwd_indices)
-
-    # 5. Utiliser torch.gather pour appliquer l'échange 2-opt de manière vectorisée
-    new_tours = torch.gather(tours, 1, final_indices)
-
-    return new_tours
+    n_problems, n_nodes = x.shape
+    # Two-opt moves invert a section of a tour. If we cut a tour into
+    # segments a and b then we can choose to invert either a or b. Due
+    # to the linear representation of a tour, we choose always to invert
+    # the segment that is stored contiguously.
+    left = torch.minimum(a[:, 0], a[:, 1])
+    right = torch.maximum(a[:, 0], a[:, 1])
+    ones = torch.ones((n_problems, 1), dtype=torch.long, device=x.device)
+    fidx = torch.arange(n_nodes, device=x.device) * ones
+    # Reversed indices
+    offset = left + right - 1
+    ridx = torch.arange(0, -n_nodes, -1, device=x.device) + offset[:, None]
+    # Set flipped section to all True
+    flip = torch.ge(fidx, left[:, None]) * torch.lt(fidx, right[:, None])
+    # Set indices to replace flipped section with
+    idx = (~flip) * fidx + flip * ridx
+    # Perform 2-opt move
+    return torch.gather(x, 1, idx)
 
 
 def SA_TSP(
     init_solutions,
-    distance_matrices,
+    problem,
+    actor,
     initial_temp=1000,
     cooling_rate=0.995,
     min_temp=1,
@@ -117,7 +99,8 @@ def SA_TSP(
     """
     n_problems, n_nodes, _ = init_solutions.shape
     device = init_solutions.device
-
+    distance_matrices = problem.matrix
+    coords = problem.coords
     current_solutions = init_solutions.squeeze(-1).clone()  # [n_problems, n_nodes]
     best_solutions = current_solutions.clone()
 
@@ -130,13 +113,20 @@ def SA_TSP(
         if temperature < min_temp:
             break
 
-        # Generate random 2-opt moves for all problems
-        i = torch.randint(0, n_nodes - 1, (n_problems,), device=device)
-        j = torch.randint(1, n_nodes, (n_problems,), device=device)
-        # j = torch.where(j > i, j, i + 1)  # Ensure j > i
+        if actor is not None:
+            with torch.no_grad():
+                features = get_features(current_solutions, coords, temperature)
+                action, _ = actor.sample(features)
+            # i, j = action[:, 0], action[:, 1]
+        else:
+            # Generate random 2-opt moves for all problems
+            i = torch.randint(0, n_nodes - 1, (n_problems,), device=device)  # 0,98
+            j = torch.randint(1, n_nodes, (n_problems,), device=device)  # 1,99
+            action = torch.stack((i, j), dim=1)
+            # j = torch.where(j > i, j, i + 1)  # Ensure j > i
 
         # Apply 2-opt swaps (vectorized)
-        new_tours = two_opt(current_solutions, i, j)
+        new_tours = two_opt(current_solutions, action)
 
         # Calculate new distances (vectorized)
         new_distances = calculate_tour_distances(new_tours, distance_matrices)
@@ -160,7 +150,7 @@ def SA_TSP(
         # Cool down
         temperature *= cooling_rate
 
-        if iteration % 1000 == 0:
+        if iteration % 100 == 0:
             print(
                 f"Iteration {iteration}, Temperature: {temperature:.4f}, "
                 f"Best avg distance: {best_distances.mean():.2f}"
@@ -212,7 +202,7 @@ def initialize_problem(cfg, coords, demands, capacities):
     return problem, init_x
 
 
-def run_simulated_annealing(init_x, problem, sa_params):
+def run_simulated_annealing(init_x, problem, sa_params, actor=None):
     """Run simulated annealing optimization."""
     print("Starting Simulated Annealing...")
 
@@ -221,7 +211,7 @@ def run_simulated_annealing(init_x, problem, sa_params):
     print(f"Initial average distance: {initial_distances.mean():.2f}")
 
     # Run SA
-    best_solutions = SA_TSP(init_x, problem.matrix, **sa_params)
+    best_solutions = SA_TSP(init_x, problem, actor, **sa_params)
 
     # Calculate final distances
     final_distances = calculate_tour_distances(
@@ -246,9 +236,16 @@ if __name__ == "__main__":
 
     # SA parameters
     sa_params = {
-        "initial_temp": 10_000,
+        "initial_temp": 9_000,
         "cooling_rate": 0.999,
         "min_temp": 0.00001,
+        "max_iter": 1_000_000,
+    }
+
+    sa_params_model = {
+        "initial_temp": 1,
+        "cooling_rate": 0.99,
+        "min_temp": 0.01,
         "max_iter": 1_000_000,
     }
 
@@ -279,6 +276,29 @@ if __name__ == "__main__":
     ).to(problem.device)
     time_opt_split = time.time() - start_time + time_TSP
 
+    # Run simulated annealing
+    start_time = time.time()
+
+    best_solutions_actor = run_simulated_annealing(
+        init_x, problem, sa_params_model, actor=TSP_actor
+    )
+    time_TSP_actor = time.time() - start_time
+
+    start_time = time.time()
+    sol_split_model = construct_cvrp_solution(
+        best_solutions_actor, problem.demands, problem.capacity
+    )
+    time_split_model = time.time() - start_time + time_TSP_actor
+
+    start_time = time.time()
+    sol_opt_split_model = vrp_optimal_split(
+        problem.coords,
+        problem.demands,
+        problem.capacity,
+        best_solutions_actor.squeeze(-1),
+    ).to(problem.device)
+    time_opt_split_model = time.time() - start_time + time_TSP_actor
+
     start_time = time.time()
     sol_CW = generate_Clark_and_Wright(problem).to(problem.device)
     time_CW = time.time() - start_time
@@ -291,12 +311,16 @@ if __name__ == "__main__":
 
     cost_split = problem.cost(sol_split)
     cost_opt_split = problem.cost(sol_opt_split)
+    cost_split_model = problem.cost(sol_split_model)
+    cost_opt_split_model = problem.cost(sol_opt_split_model)
     cost_CW = problem.cost(sol_CW)
     cost_sweep = problem.cost(sol_sweep)
     cost_nn = problem.cost(sol_nn)
 
     print(f"Cost of split solution: {cost_split.mean().item()}")
     print(f"Cost of optimal split solution: {cost_opt_split.mean().item()}")
+    print(f"Cost of split model solution: {cost_split_model.mean().item()}")
+    print(f"Cost of optimal split model solution: {cost_opt_split_model.mean().item()}")
     print(f"Cost of initial solution: {cost_CW.mean().item()}")
     print(f"Cost of sweep solution: {cost_sweep.mean().item()}")
     print(f"Cost of nearest neighbor solution: {cost_nn.mean().item()}")
@@ -305,6 +329,8 @@ if __name__ == "__main__":
     methods = [
         "Split TSP",
         "Optimal Split TSP",
+        "Split Model TSP",
+        "Optimal Split Model TSP",
         "Clark & Wright",
         "Sweep",
         "Nearest Neighbor",
@@ -312,6 +338,8 @@ if __name__ == "__main__":
     costs = [
         cost_split.mean().item(),
         cost_opt_split.mean().item(),
+        cost_split_model.mean().item(),
+        cost_opt_split_model.mean().item(),
         cost_CW.mean().item(),
         cost_sweep.mean().item(),
         cost_nn.mean().item(),
@@ -320,7 +348,10 @@ if __name__ == "__main__":
     # Create the bar plot
     plt.figure(figsize=(8, 6))
     plt.bar(
-        methods, costs, color=["blue", "purple", "orange", "green", "red"], alpha=0.7
+        methods,
+        costs,
+        color=["blue", "purple", "yellow", "brown", "orange", "green", "red"],
+        alpha=0.7,
     )
 
     # Add labels and title
@@ -330,9 +361,27 @@ if __name__ == "__main__":
     plt.grid(axis="y", linestyle="--", alpha=0.6)
 
     # Add value annotations on top of the bars
-    for i, t in enumerate([time_split, time_opt_split, time_CW, time_sweep, time_nn]):
-        plt.text(i, costs[i] + 0.25, f"{t:.2f}s", ha="center", fontsize=11)
+    for i, t in enumerate(costs):
+        plt.text(i, t + 0.25, f"{t:.2f}", ha="center", fontsize=11)
 
+    # Add value annotations on bottom of the bars
+    for i, t in enumerate(
+        [
+            time_split,
+            time_opt_split,
+            time_split_model,
+            time_opt_split_model,
+            time_CW,
+            time_sweep,
+            time_nn,
+        ]
+    ):
+        plt.text(
+            i, costs[i] - 1.25, f"{t:.2f}s", ha="center", color="grey", fontsize=11
+        )
+
+    # Rotate x-axis labels by 45 degrees
+    plt.xticks(rotation=45)
     # Show the plot
     plt.tight_layout()
     plt.savefig("plots/TSP_split_solution_comparison.png")
