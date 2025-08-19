@@ -249,178 +249,13 @@ def random_init_batch(cvrp_instance) -> torch.Tensor:
     return routes.unsqueeze(-1)  # Add dimension for compatibility
 
 
-# def vrp_optimal_split(coordinates, demands, max_loads, client_order):
-#     """
-#     Optimal O(n) split algorithm for the VRP with fixed order.
-
-#     This function implements the linear-time algorithm by Vidal (2016)
-#     to find the optimal split of a client tour. It is both correct and
-#     significantly more efficient than dynamic programming approaches
-#     based on capacity constraints.
-
-#     Args:
-#         coordinates: Tensor [batch_size, n_clients+1, 2] - coordinates
-#         (depot at position 0)
-#         demands: Tensor [batch_size, n_clients+1, 1] - demands (depot = 0)
-#         max_loads: Tensor [batch_size, 1] - maximum capacity per problem
-#         client_order: Tensor [batch_size, n_clients] - client order (excluding depot)
-
-#     Returns:
-#         solutions: Tensor [batch_size, max_solution_length, 1] -
-#         solutions with depots inserted
-#     """
-#     device = coordinates.device
-#     batch_size = coordinates.shape[0]
-#     n_clients_total = coordinates.shape[1] - 1
-
-#     if n_clients_total == 0:
-#         return torch.zeros(batch_size, 1, 1, dtype=torch.long, device=device)
-
-#     # --- Precomputations (vectorized over the batch) ---
-
-#     # Full Euclidean distance matrix
-#     distances = torch.norm(coordinates.unsqueeze(2) - coordinates.unsqueeze(1), dim=3)
-
-#     batch_indices = torch.arange(batch_size, device=device).unsqueeze(1)
-
-#     # Retrieve demands and coordinates in the order of the tour
-#     # Note: client_order contains client IDs (e.g., 1, 5, 2), not indices 0..n-1
-#     ordered_demands = demands[batch_indices, client_order]  # [batch_size, n_clients, 1]
-
-#     # Feasibility check
-#     if (ordered_demands.squeeze(-1) > max_loads).any():
-#         raise ValueError("Some clients have demands exceeding the maximum capacity.")
-
-#     # Cumulative calculations for the O(n) algorithm
-#     # Q_cum[b, i] = cumulative demand up to the i-th client in the tour
-#     Q_cum = torch.cumsum(ordered_demands.squeeze(-1), dim=1)
-
-#     # D_cum[b, i] = cumulative distance along the tour up to the i-th client
-#     # Compute distances between consecutive clients in the order
-#     ordered_coords_prev = coordinates[batch_indices, client_order[:, :-1]]
-#     ordered_coords_next = coordinates[batch_indices, client_order[:, 1:]]
-#     inter_client_dist = torch.norm(ordered_coords_next - ordered_coords_prev, dim=2)
-#     D_cum = torch.cumsum(inter_client_dist, dim=1)
-#     # Add a 0 at the beginning so that D_cum[i] is the distance up to client i
-#     D_cum = torch.cat([torch.zeros(batch_size, 1, device=device), D_cum], dim=1)
-
-#     # --- O(n) algorithm applied to each instance in the batch ---
-
-#     final_solutions = []
-
-#     for b in tqdm(range(batch_size), desc="Solving VRP", leave=False):
-#         # Extract data for instance 'b'
-#         n_clients = client_order[b].shape[0]
-#         order_b = client_order[b]
-#         dist_b = distances[b]
-#         q_cum_b = Q_cum[b]
-#         d_cum_b = D_cum[b]
-#         max_load_b = max_loads[b].item()
-
-#         # p[i] = cost of the best path from the depot to the i-th client in the tour
-#         p = torch.full((n_clients + 1,), float("inf"), device=device)
-#         # pred[i] = optimal predecessor (split point) for client i
-#         pred = torch.zeros((n_clients + 1,), dtype=torch.long, device=device)
-
-#         p[0] = 0
-#         # The deque contains indices of potential predecessors (0 to n)
-#         deque = collections.deque([0])
-
-#         # g_vals[i] = fixed cost associated with predecessor i
-#         # g_i = p[i] + dist(depot, C_i+1) - D_cum[i]
-#         # Compute distances from the depot to clients once
-#         dist_depot_to_ordered_clients = dist_b[0, order_b]
-
-#         for t in range(1, n_clients + 1):
-#             # Remove predecessors from the deque that no longer respect capacity
-#             # to serve client t (at index t-1 in 0-indexed arrays)
-#             while (
-#                 deque
-#                 and q_cum_b[t - 1] - (q_cum_b[deque[0] - 1] if deque[0] > 0 else 0)
-#                 > max_load_b
-#             ):
-#                 deque.popleft()
-
-#             if not deque:
-#                 raise ValueError(f"Problem {b} infeasible, no valid predecessor found.")
-
-#             # The best predecessor is always the first in the deque
-#             best_pred_idx = deque[0]
-
-#             # Cost of the new route: Depot -> C_{i+1} -> ... -> C_t -> Depot
-#             # (i is best_pred_idx, t is the current index)
-#             cost_depot_to_first = (
-#                 dist_depot_to_ordered_clients[best_pred_idx]
-#                 if best_pred_idx < n_clients
-#                 else dist_b[0, order_b[-1]]
-#             )
-#             dist_in_tour = d_cum_b[t - 1] - d_cum_b[best_pred_idx]
-#             cost_last_to_depot = dist_b[order_b[t - 1], 0]
-
-#             cost_route = cost_depot_to_first + dist_in_tour + cost_last_to_depot
-
-#             p[t] = p[best_pred_idx] + cost_route
-#             pred[t] = best_pred_idx
-
-#             # Update the deque with t as a new potential predecessor
-#             if t < n_clients:
-#                 # Compute the 'g' value for the new predecessor t
-#                 # g_t = p[t] + dist(depot, C_t+1) - D_cum[t]
-#                 g_t = p[t] + dist_depot_to_ordered_clients[t] - d_cum_b[t]
-
-#                 # Remove predecessors dominated by t from the deque
-#                 while deque:
-#                     j = deque[-1]
-#                     # Compute g_j
-#                     dist_depot_j = (
-#                         dist_depot_to_ordered_clients[j]
-#                         if j < n_clients
-#                         else dist_b[0, order_b[-1]]
-#                     )
-#                     g_j = p[j] + dist_depot_j - d_cum_b[j]
-#                     if g_t <= g_j:
-#                         deque.pop()
-#                     else:
-#                         break
-#                 deque.append(t)
-
-#         # --- Correct backtracking ---
-#         solution_b = [0]
-#         split_points = []
-#         curr = n_clients
-#         while curr > 0:
-#             split_points.append(curr)
-#             curr = pred[curr].item()
-
-#         # Reconstruct the solution from the split points
-#         tour_segment = []
-#         # last_split = 0
-#         for i in range(n_clients):
-#             tour_segment.append(order_b[i].item())
-#             if (i + 1) in split_points:
-#                 solution_b.extend(tour_segment)
-#                 solution_b.append(0)
-#                 tour_segment = []
-
-#         final_solutions.append(torch.tensor(solution_b, device=device))
-
-#     # --- Padding to ensure uniform tensor size ---
-#     max_len = max(len(sol) for sol in final_solutions) if final_solutions else 1
-#     padded_solutions = torch.zeros(
-#         batch_size, max_len, 1, dtype=torch.long, device=device
-#     )
-#     for i, sol in enumerate(final_solutions):
-#         padded_solutions[i, : len(sol), 0] = sol
-
-#     return padded_solutions
-
-
 def _vrp_optimal_split_worker(args):
     """
     Worker function for parallel processing of VRP optimal split algorithm.
 
     Args:
-        args: Tuple containing (batch_index, coordinates, demands, max_loads, client_order)
+        args: Tuple containing (batch_index, coordinates, demands, max_loads,
+        client_order)
 
     Returns:
         Tuple of (batch_index, solution_tensor)
@@ -447,7 +282,8 @@ def _vrp_optimal_split_worker(args):
     # Feasibility check
     if (ordered_demands.squeeze(-1) > max_loads).any():
         raise ValueError(
-            f"Problem {batch_index} infeasible: some clients have demands exceeding capacity."
+            f"Problem {batch_index} infeasible: some clients have demands exceeding "
+            "capacity."
         )
 
     # Cumulative calculations for the O(n) algorithm

@@ -248,7 +248,7 @@ if __name__ == "__main__":
 
     sa_params_model = {
         "initial_temp": 1,
-        "cooling_rate": 0.999,
+        "cooling_rate": 0.995,
         "min_temp": 0.01,
         "max_iter": 1_000_000,
     }
