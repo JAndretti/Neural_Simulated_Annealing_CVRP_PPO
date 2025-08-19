@@ -27,12 +27,10 @@ from tqdm import tqdm
 # --------------------------------
 # Import custom modules
 # --------------------------------
-from HP import _HP, get_script_arguments
-from Logger import WandbLogger
+from setup import _HP, get_script_arguments, WandbLogger
 from model import CVRPActor, CVRPActorPairs, CVRPCritic
-from ppo import ppo
+from ppo import ppo, ReplayBuffer
 from problem import CVRP
-from replay import ReplayBuffer
 from sa import sa_train
 
 # --------------------------------

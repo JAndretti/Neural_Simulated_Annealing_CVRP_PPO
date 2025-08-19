@@ -6,7 +6,7 @@ from loguru import logger
 from tqdm import tqdm  # Progress bar for iterations
 
 from model import SAModel
-from replay import ReplayBuffer, Transition
+from .replay import ReplayBuffer, Transition
 
 # Remove default logger
 logger.remove()

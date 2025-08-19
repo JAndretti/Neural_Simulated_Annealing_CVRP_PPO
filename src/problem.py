@@ -9,7 +9,7 @@ from utils import repeat_to  # Utility function for tensor expansion
 from loguru import logger  # Advanced logging utility
 from typing import Union
 
-from heur_init import (
+from algo import (
     generate_isolate_solution,
     generate_sweep_solution,
     random_init_batch,

@@ -7,7 +7,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from problem import CVRP
-from heur_init import (
+from algo import (
     construct_cvrp_solution,
     generate_Clark_and_Wright,
     generate_sweep_solution,

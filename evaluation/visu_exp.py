@@ -20,7 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "s
 from problem import CVRP
 from sa import sa_train
 from model import CVRPActorPairs, CVRPActor
-from or_tools import test_or_tools
+from algo import test_or_tools
 
 # --- Configurations ---
 

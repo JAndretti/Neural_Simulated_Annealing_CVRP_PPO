@@ -1,6 +1,6 @@
 from typing import Dict
 import torch
-from scheduler import Scheduler
+from .scheduler import Scheduler
 from problem import Problem
 from utils import extend_to
 from tqdm import tqdm

@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "s
 
 from sa import sa_train
 from model import CVRPActorPairs, CVRPActor
-from or_tools import compute_euclidean_distance_matrix
+from algo import compute_euclidean_distance_matrix
 
 # Remove default logger
 logger.remove()
