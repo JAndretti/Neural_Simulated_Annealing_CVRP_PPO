@@ -173,7 +173,11 @@ def setup_config(coords, capacities):
         "N_PROBLEMS": capacities.shape[0],
         "OUTER_STEPS": 10000,
         "MAX_LOAD": 50,
-        "DEVICE": "cuda",
+        "DEVICE": (
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available() else "cpu"
+        ),
         "SEED": 0,
         "LOAD_PB": True,
         "CLUSTERING": False,
