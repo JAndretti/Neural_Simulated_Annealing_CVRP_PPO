@@ -115,8 +115,9 @@ def SA_TSP(
 
         if actor is not None:
             with torch.no_grad():
-                features = get_features(current_solutions, coords, temperature)
-                action, _ = actor.sample(features)
+                with torch.amp.autocast(device.type):  # Mixed precision
+                    features = get_features(current_solutions, coords, temperature)
+                    action, _ = actor.sample(features)
             # i, j = action[:, 0], action[:, 1]
         else:
             # Generate random 2-opt moves for all problems
@@ -197,7 +198,7 @@ def initialize_problem(cfg, coords, demands, capacities):
     problem.manual_seed(cfg["SEED"])
     params = problem.generate_params("test", cfg["LOAD_PB"], coords, demands)
     problem.set_params(params)
-    init_x = problem.generate_init_x("random")
+    init_x = problem.generate_init_solution("random")
 
     # Filter out zero entries
     mask = init_x.squeeze(-1) != 0
