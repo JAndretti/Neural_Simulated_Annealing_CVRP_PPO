@@ -19,7 +19,7 @@ NB_CLUSTERS_MAX: 10                    # Maximum number of clusters if clusterin
 ALT_CLUSTERING: False                   # Use alternate clustering during training
 
 # =============== Heuristic & Initial Solution ===============
-HEURISTIC: "insertion"                 # Local search method
+HEURISTIC: "two_opt"                 # Local search method
 MIX1: "swap"                           # First local search method if HEURISTIC is "mix"
 MIX2: "insertion"                      # Second local search method if HEURISTIC is "mix"
 

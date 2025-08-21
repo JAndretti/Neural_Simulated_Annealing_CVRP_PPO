@@ -698,7 +698,30 @@ class CVRP(Problem):
 
         return solution
 
-    def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    # def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Perform 2-opt move by reversing segment between indices.
+
+    #     Args:
+    #         solution: Tensor [batch, num_nodes, 1]
+    #         indices: Tensor [batch, 2] containing segment endpoints
+
+    #     Returns:
+    #         Solution with reversed segment
+    #     """
+    #     left = torch.minimum(indices[:, 0], indices[:, 1])
+    #     right = torch.maximum(indices[:, 0], indices[:, 1])
+
+    #     # Create reversed indices for the segment
+    #     idx = torch.arange(solution.size(1), device=solution.device)
+    #     idx = idx.repeat(solution.size(0), 1)
+    #     reverse_mask = (idx >= left[:, None]) & (idx < right[:, None])
+    #     reversed_idx = left[:, None] + right[:, None] - 1 - idx
+    #     idx = torch.where(reverse_mask, reversed_idx, idx).to(torch.int64)
+
+    #     return torch.gather(solution, 1, idx.unsqueeze(-1))
+
+    def two_opt(self, x: torch.Tensor, a: torch.Tensor):
         """
         Perform 2-opt move by reversing segment between indices.
 
@@ -709,17 +732,23 @@ class CVRP(Problem):
         Returns:
             Solution with reversed segment
         """
-        left = torch.minimum(indices[:, 0], indices[:, 1])
-        right = torch.maximum(indices[:, 0], indices[:, 1])
-
-        # Create reversed indices for the segment
-        idx = torch.arange(solution.size(1), device=solution.device)
-        idx = idx.repeat(solution.size(0), 1)
-        reverse_mask = (idx >= left[:, None]) & (idx < right[:, None])
-        reversed_idx = left[:, None] + right[:, None] - 1 - idx
-        idx = torch.where(reverse_mask, reversed_idx, idx).to(torch.int64)
-
-        return torch.gather(solution, 1, idx.unsqueeze(-1))
+        # Two-opt moves invert a section of a tour. If we cut a tour into
+        # segments a and b then we can choose to invert either a or b. Due
+        # to the linear representation of a tour, we choose always to invert
+        # the segment that is stored contiguously.
+        left = torch.minimum(a[:, 0], a[:, 1])
+        right = torch.maximum(a[:, 0], a[:, 1])
+        ones = torch.ones((self.n_problems, 1), dtype=torch.long, device=self.device)
+        fidx = torch.arange(self.dim, device=self.device) * ones
+        # Reversed indices
+        offset = left + right - 1
+        ridx = torch.arange(0, -self.dim, -1, device=self.device) + offset[:, None]
+        # Set flipped section to all True
+        flip = torch.ge(fidx, left[:, None]) * torch.lt(fidx, right[:, None])
+        # Set indices to replace flipped section with
+        idx = (~flip) * fidx + flip * ridx
+        # Perform 2-opt move
+        return torch.gather(x, 1, idx.unsqueeze(-1))
 
     def insertion(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """

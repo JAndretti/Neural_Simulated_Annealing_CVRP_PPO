@@ -511,7 +511,7 @@ def construct_cvrp_solution(
     remaining_capacity = capacity.long()
     route_pos = torch.zeros(batch_size, dtype=torch.long, device=device)
 
-    for i in tqdm(range(num_nodes), desc="Constructing CVRP Solution", leave=False):
+    for i in range(num_nodes):
         current_client = x[:, i]
         can_serve = ordered_demands[:, i] <= remaining_capacity
 
