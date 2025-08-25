@@ -24,6 +24,7 @@ from algo import (
     generate_Clark_and_Wright,
     generate_nearest_neighbor,
     construct_cvrp_solution,
+    # vrp_optimal_split,
     cheapest_insertion,
     path_cheapest_arc,
     farthest_insertion,
@@ -649,6 +650,9 @@ class CVRP(Problem):
 
             # 4. Rebuild valid CVRP solution with depot visits inserted where needed
             sol = construct_cvrp_solution(modified_sol, self.demands, self.capacity)
+            # sol = vrp_optimal_split(
+            #     self.coords, self.demands, self.capacity, modified_sol.squeeze(-1)
+            # )
             # Add padding to match the shape of the original solution
             padding_size = solution.size(1) - sol.size(1)
             if padding_size > 0:

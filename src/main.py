@@ -269,6 +269,8 @@ def test_model(
     if problem.device == "cuda":
         torch.cuda.empty_cache()
 
+    tmp = config["OUTER_STEPS"]
+    config["OUTER_STEPS"] = config["TEST_OUTER_STEPS"]
     # Perform Simulated Annealing for testing
     test_results = sa_train(
         actor=actor,
@@ -280,6 +282,7 @@ def test_model(
         greedy=False,
         train=False,
     )
+    config["OUTER_STEPS"] = tmp
 
     # Clean up GPU memory
     if problem.device == "cuda":

@@ -449,6 +449,7 @@ def vrp_optimal_split(coordinates, demands, max_loads, client_order):
                     pool.imap(_vrp_optimal_split_worker, args_list),
                     total=batch_size,
                     desc="VRP Optimal Split",
+                    leave=False,
                 )
             )
     else:
