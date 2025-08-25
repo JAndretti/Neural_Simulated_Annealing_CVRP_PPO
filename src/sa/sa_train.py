@@ -3,7 +3,7 @@ import torch
 from model import SAModel
 from problem import Problem
 from utils import extend_to
-from scheduler import Scheduler
+from .scheduler import Scheduler
 from tqdm import tqdm
 
 

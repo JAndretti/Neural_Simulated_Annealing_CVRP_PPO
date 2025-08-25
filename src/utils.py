@@ -65,3 +65,26 @@ def plot_CVRP(ax, nodes, x_coords, y_coords, title="Solution"):
         for x, y, val in zip(segment_x, segment_y, segment_values):
             ax.text(x, y, str(int(val)), fontsize=9, ha="center", va="bottom")
     ax.set_title(f"{title} : {list(map(int, nodes))}")
+
+
+def calculate_client_angles(coords: torch.Tensor) -> torch.Tensor:
+    """
+    coords: [B, N, 2], coords[:,0] = dépôt
+    renvoie [B, N, 1] avec angle normalisé [0,1] (dépôt=0)
+    """
+    depot = coords[:, :1]
+    clients = coords[:, 1:]
+    delta = clients - depot
+    ang = torch.atan2(delta[..., 1], delta[..., 0])  # [-π,π]
+    norm = ang.div(2 * torch.pi).add(0.5)  # [0,1]
+    all_ang = torch.cat(
+        [torch.zeros(coords.size(0), 1, device=coords.device), norm], dim=1
+    )
+    return all_ang.unsqueeze(-1)
+
+
+def calculate_distance_matrix(coords: torch.Tensor) -> torch.Tensor:
+    """
+    coords: [B, N, 2] → distances Euclidiennes [B, N, N]
+    """
+    return torch.cdist(coords, coords, p=2)

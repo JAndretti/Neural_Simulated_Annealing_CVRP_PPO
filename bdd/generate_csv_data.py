@@ -6,7 +6,7 @@ import pandas as pd
 
 # Add src directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from or_tools import or_tools, compute_euclidean_distance_matrix
+from algo import or_tools, compute_euclidean_distance_matrix
 from tqdm import tqdm
 
 from loguru import logger  # Enhanced logging capabilities

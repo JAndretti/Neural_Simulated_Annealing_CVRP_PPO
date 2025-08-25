@@ -8,9 +8,9 @@ import os
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-from problem import CVRP
+# from problem import CVRP
 
-from HP import _HP, get_script_arguments
+# from setup import _HP, get_script_arguments
 from tqdm import tqdm
 import multiprocessing
 
@@ -239,22 +239,22 @@ def or_tools(params, cfg, mult_thread=False):
     return list(solutions), list(distances), list(names)
 
 
-def main():
-    cfg = _HP("src/test.yaml")
-    cfg.update(get_script_arguments(cfg.keys()))
+# def main():
+#     cfg = _HP("src/test.yaml")
+#     cfg.update(get_script_arguments(cfg.keys()))
 
-    set_seed(cfg["SEED"])
-    problem = CVRP(cfg["OR_DIM"], cfg["N_PROBLEMS"], device="cpu")
-    params = problem.generate_params()
-    params = {k: v.to("cpu") for k, v in params.items()}
-    problem.set_params(params)
-    init_x = problem.generate_init_x()
-    solutions, distance = or_tools(params, cfg)
-    solutions = torch.tensor(solutions).unsqueeze(-1)
-    cost_init = problem.cost(init_x)
-    cost = problem.cost(solutions)
-    print((torch.mean(cost_init)).item())
-    print((torch.mean(cost)).item())
+#     set_seed(cfg["SEED"])
+#     problem = CVRP(cfg["OR_DIM"], cfg["N_PROBLEMS"], device="cpu")
+#     params = problem.generate_params()
+#     params = {k: v.to("cpu") for k, v in params.items()}
+#     problem.set_params(params)
+#     init_x = problem.generate_init_x()
+#     solutions, distance = or_tools(params, cfg)
+#     solutions = torch.tensor(solutions).unsqueeze(-1)
+#     cost_init = problem.cost(init_x)
+#     cost = problem.cost(solutions)
+#     print((torch.mean(cost_init)).item())
+#     print((torch.mean(cost)).item())
 
 
 def test_or_tools(params, cfg):
@@ -271,5 +271,5 @@ def filter_and_convert_solutions(solutions):
     return torch.tensor(filtered_solutions).unsqueeze(-1)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

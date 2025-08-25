@@ -2,14 +2,22 @@
 # Import required libraries
 # --------------------------------
 from abc import ABC, abstractmethod  # Abstract base classes for problem definition
-from typing import Dict, Tuple, Optional  # Type hints for better code readability
+from typing import (
+    Dict,
+    Tuple,
+    Optional,
+    Union,
+)  # Type hints for better code readability
 import torch  # PyTorch for tensor operations
-import torch.nn.functional as F  # PyTorch functional API for operations
-from utils import repeat_to  # Utility function for tensor expansion
+import torch.nn.functional as F
 from loguru import logger  # Advanced logging utility
-from typing import Union
 
-from heur_init import (
+from utils import (
+    repeat_to,
+    calculate_client_angles,
+    calculate_distance_matrix,
+)
+from algo import (
     generate_isolate_solution,
     generate_sweep_solution,
     random_init_batch,
@@ -22,145 +30,151 @@ from heur_init import (
 )
 
 
-def calculate_client_angles(coords: torch.Tensor) -> torch.Tensor:
-    """
-    Calculate polar angles of clients with respect to the depot for each problem.
-
-    The depot is assumed to be at position 0 for each problem in the batch.
-    Angles are calculated in radians in the range [-π, π] using the arctangent function.
-
-    Args:
-        coords: Tensor of shape [batch_size, num_nodes, 2] containing coordinates
-               where coords[:, 0, :] represents depot coordinates
-
-    Returns:
-        Tensor of shape [batch_size, num_nodes-1] containing angles in radians
-        for each client (excluding depot) relative to the depot
-    """
-    batch_size, num_nodes, _ = coords.shape
-    device = coords.device
-
-    # Extract depot coordinates (first node in each problem)
-    depot_coords = coords[:, 0:1, :]  # [batch_size, 1, 2]
-
-    # Extract client coordinates (all nodes except depot)
-    client_coords = coords[:, 1:, :]  # [batch_size, num_nodes-1, 2]
-
-    # Calculate vectors from depot to each client
-    delta_coords = client_coords - depot_coords  # [batch_size, num_nodes-1, 2]
-
-    # Calculate polar angles (in radians) for each client relative to depot
-    # atan2(y, x) gives angle in radians in range [-π, π] and then normalize to [0, 1]
-    angles = (
-        torch.atan2(delta_coords[:, :, 1], delta_coords[:, :, 0]) / (2 * torch.pi) + 0.5
-    ).to(device)
-    # Concatenate a column of zeros at the beginning to represent the depot's angle (0)
-    angles = torch.cat(
-        (torch.zeros(batch_size, 1, device=device), angles), dim=1
-    )  # Shape: [batch_size, num_nodes]
-    return angles.unsqueeze(-1)  # Shape: [batch_size, num_nodes, 1]
-
-
-def calculate_distance_matrix(coords: torch.Tensor) -> torch.Tensor:
-    """
-    Calculate the distance matrix between all nodes for each problem in the batch.
-
-    Args:
-        coords: Tensor of shape [batch_size, num_nodes, 2] containing coordinates
-               of nodes for each problem in the batch
-
-    Returns:
-        Tensor of shape [batch_size, num_nodes, num_nodes] containing the Euclidean
-        distances between all pairs of nodes for each problem
-    """
-    batch_size, num_nodes, _ = coords.shape
-    device = coords.device
-
-    # Expand coordinates for broadcasting
-    # [batch_size, num_nodes, 1, 2]
-    coords_expanded_1 = coords.unsqueeze(2)
-    # [batch_size, 1, num_nodes, 2]
-    coords_expanded_2 = coords.unsqueeze(1)
-
-    # Calculate squared Euclidean distances between all pairs of nodes
-    # Result shape: [batch_size, num_nodes, num_nodes]
-    distances = torch.sqrt(
-        torch.sum((coords_expanded_1 - coords_expanded_2) ** 2, dim=-1)
-    )
-
-    return distances.to(device)
-
-
 class Problem(ABC):
+    """
+    Abstract base class defining the interface for optimization problems.
+
+    This class provides the foundation for implementing various optimization problems
+    by defining common operations and required abstract methods.
+    """
+
     def __init__(self, device: str = "cpu") -> None:
+        """
+        Initialize the problem.
+
+        Args:
+            device: Computation device (cpu/cuda)
+        """
         self.device = device
         self.generator = torch.Generator(device=device)
 
     def gain(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate improvement gained by applying action to solution.
+
+        Args:
+            s: Current solution
+            a: Action to apply
+
+        Returns:
+            Cost difference between current and updated solution
+        """
         return self.cost(s) - self.cost(self.update(s, a))
 
     def manual_seed(self, seed: int) -> None:
+        """
+        Set random generator seed for reproducibility.
+
+        Args:
+            seed: Random seed value
+        """
         self.generator = torch.Generator(device=self.device)
         self.generator.manual_seed(seed)
 
     @abstractmethod
     def cost(self, s: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate cost of a solution.
+
+        Args:
+            s: Solution tensor
+
+        Returns:
+            Cost tensor
+        """
         pass
 
     @abstractmethod
     def update(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        """
+        Apply an action to modify a solution.
+
+        Args:
+            s: Current solution tensor
+            a: Action tensor
+
+        Returns:
+            Updated solution tensor
+        """
         pass
 
     @abstractmethod
     def set_params(self, **kwargs) -> None:
+        """
+        Set problem parameters.
+
+        Args:
+            **kwargs: Problem-specific parameters
+        """
         pass
 
     @abstractmethod
     def generate_params(self) -> Dict[str, torch.Tensor]:
+        """
+        Generate problem parameters.
+
+        Returns:
+            Dictionary of problem parameters
+        """
         pass
 
     @property
     def state_encoding(self) -> torch.Tensor:
+        """
+        Get problem's state encoding.
+
+        Returns:
+            Tensor representation of the problem state
+        """
         pass
 
     @abstractmethod
     def generate_init_state(self) -> torch.Tensor:
-        pass
-
-    def to_state(
-        self,
-        *components: torch.Tensor,
-    ) -> torch.Tensor:
         """
-        Concatenates multiple state components into a single state tensor.
-
-        Args:
-            *components (torch.Tensor): Variable number of tensors representing
-            different components of the state. Each tensor should have the same shape
-            except for the last dimension, which will be concatenated.
+        Generate initial state for the problem.
 
         Returns:
-            torch.Tensor: A single tensor resulting from concatenating all input
-            components along  the last dimension.
-
-
-        Note:
-            The input tensors are expected to be the output of the
-            `build_state_components` function, which returns a tuple of tensors
-            representing different aspects of the problem state.
+            Initial state tensor
         """
+        pass
 
+    def to_state(self, *components: torch.Tensor) -> torch.Tensor:
+        """
+        Concatenate multiple state components into a single state tensor.
+
+        Args:
+            *components: Variable number of tensors representing different components
+                        of the state. Each tensor should have the same shape except
+                        for the last dimension, which will be concatenated.
+
+        Returns:
+            A single tensor resulting from concatenating all input components
+            along the last dimension.
+        """
         return torch.cat(components, dim=-1)
 
     def from_state(self, state: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        """Split state into components dynamically."""
+        """
+        Split state into components dynamically.
+
+        Args:
+            state: Combined state tensor
+
+        Returns:
+            Tuple of component tensors
+        """
         num_extra_features = state.shape[-1] - 3  # Adjusting for variable dimensions
         split_sizes = [1, 2] + [1] * num_extra_features
-        return tuple(torch.split(state, split_sizes, dim=-1))  # TODO Verify function
+        return tuple(torch.split(state, split_sizes, dim=-1))
 
 
 class CVRP(Problem):
-    """Capacitated Vehicle Routing Problem implementation."""
+    """
+    Capacitated Vehicle Routing Problem implementation.
+
+    This class implements the CVRP, where a fleet of vehicles with limited capacity
+    must serve customer demands while minimizing total route distance.
+    """
 
     x_dim = 1  # Dimension for solution representation
 
@@ -178,19 +192,60 @@ class CVRP(Problem):
         Args:
             dim: Number of client nodes (excluding depot)
             n_problems: Batch size for parallel processing
-            capacity: Vehicle capacity constraint
+            capacities: Vehicle capacity constraint(s)
             device: Computation device (cpu/cuda)
             params: Configuration parameters including:
-                   - HEURISTIC: 'swap' or 'two_opt'
+                   - HEURISTIC: 'swap' or 'two_opt', etc.
                    - CLUSTERING: Whether to use clustered instances
                    - NB_CLUSTERS_MAX: Max clusters if clustering enabled
+                   - UPDATE_METHOD: How to apply heuristics
+                   - INIT: Initial solution generation method
         """
         super().__init__(device)
         self.params = params or {}
         self._init_problem_parameters(dim, n_problems, capacities)
 
+    # --------------------------------
+    # Initialization and Configuration
+    # --------------------------------
+
+    def _init_problem_parameters(self, dim, n_problems, capacities):
+        """
+        Initialize problem size and constraints.
+
+        Args:
+            dim: Problem dimension (number of clients)
+            n_problems: Number of problem instances in batch
+            capacities: Vehicle capacity constraint(s)
+        """
+        self.n_problems = n_problems
+        self.dim = dim
+        if isinstance(capacities, int):
+            self.capacity = torch.full(
+                (self.n_problems, 1),
+                capacities,
+                device=self.device,
+                dtype=torch.float32,
+            )
+        elif isinstance(capacities, torch.Tensor):
+            self.capacity = capacities.to(self.device)
+        else:
+            raise ValueError("capacities must be either an int or a torch.Tensor")
+        self.clustering = self.params.get("CLUSTERING", False)
+        self.nb_clusters_max = self.params.get("NB_CLUSTERS_MAX", 3)
+
     def set_heuristic(self, heuristic: str, mix1: str = None, mix2: str = None) -> None:
-        """Set the heuristic for modifying solutions."""
+        """
+        Configure the heuristic method for solution modification.
+
+        Args:
+            heuristic: Type of heuristic ('swap', 'two_opt', 'insertion', 'mix')
+            mix1: First heuristic type if using mixed approach
+            mix2: Second heuristic type if using mixed approach
+
+        Raises:
+            ValueError: If unsupported heuristic specified
+        """
         if heuristic == "swap":
             self.heuristic = self.swap
         elif heuristic == "two_opt":
@@ -211,26 +266,52 @@ class CVRP(Problem):
         else:
             raise ValueError(f"Unsupported heuristic: {heuristic}")
 
-    def _init_problem_parameters(self, dim, n_problems, capacities):
-        """Initialize problem size and constraints."""
-        self.n_problems = n_problems
-        self.dim = dim
-        if isinstance(capacities, int):
-            self.capacity = torch.full(
-                (self.n_problems, 1),
-                capacities,
-                device=self.device,
-                dtype=torch.float32,
-            )
-        elif isinstance(capacities, torch.Tensor):
-            self.capacity = capacities.to(self.device)
-        else:
-            raise ValueError("capacities must be either an int or a torch.Tensor")
-        self.clustering = self.params["CLUSTERING"]
-        self.nb_clusters_max = self.params.get("NB_CLUSTERS_MAX", 3)
+    def set_params(self, params: Dict) -> None:
+        """
+        Update problem coordinates and demands.
 
-    def _set_demands_coords(self, coords: torch.Tensor, demands: torch.Tensor) -> None:
-        """Set coordinates and demands for the problem if loaded problem."""
+        Args:
+            params: Dictionary containing problem parameters
+        """
+        if "coords" in params:
+            self.coords = params["coords"].to(self.device)
+        if "demands" in params:
+            self.demands = params["demands"].to(self.device)
+        self._init_derived_features()
+
+    def _init_derived_features(self):
+        """
+        Initialize derived features from problem coordinates.
+
+        Computes angles, distance matrix, and normalized distances from depot.
+        """
+        self.angles = calculate_client_angles(self.coords)
+        self.matrix = calculate_distance_matrix(self.coords)
+
+        # Calculate distances from depot to clients and normalize row-wise to [0,1]
+        self.dist_to_depot = self.matrix[:, 0, 0:]  # Distances from depot to clients
+        # Find min and max values per batch for normalization
+        min_dist = torch.min(self.dist_to_depot, dim=1, keepdim=True)[0]
+        max_dist = torch.max(self.dist_to_depot, dim=1, keepdim=True)[0]
+        # Avoid division by zero
+        divisor = torch.clamp(max_dist - min_dist, min=1e-10)
+        # Normalize each row to [0,1] range
+        self.dist_to_depot = ((self.dist_to_depot - min_dist) / divisor).unsqueeze(-1)
+
+    def _set_demands_coords(self, coords: torch.Tensor, demands: torch.Tensor) -> Dict:
+        """
+        Set coordinates and demands for the problem from loaded data.
+
+        Args:
+            coords: Node coordinates tensor
+            demands: Demand values tensor
+
+        Returns:
+            Dictionary containing coordinates and demands
+
+        Raises:
+            ValueError: If dimensions don't match expected batch size
+        """
         if coords.shape[0] != self.n_problems:
             raise ValueError(
                 f"Expected {self.n_problems} problems, got {coords.shape[0]}"
@@ -241,27 +322,9 @@ class CVRP(Problem):
             )
         return {"coords": coords, "demands": demands}
 
-    def set_params(self, params: Dict) -> None:
-        """Update problem coordinates and demands."""
-        if "coords" in params:
-            self.coords = params["coords"].to(self.device)
-        if "demands" in params:
-            self.demands = params["demands"].to(self.device)
-        self._init_some_features()
-
-    def _init_some_features(self):
-        """Initialize some derived features for the problem."""
-        self.angles = calculate_client_angles(self.coords)
-        self.matrix = calculate_distance_matrix(self.coords)
-        # Calculate distances from depot to clients and normalize row-wise to [0,1]
-        self.dist_to_depot = self.matrix[:, 0, 0:]  # Distances from depot to clients
-        # Find min and max values per batch for normalization
-        min_dist = torch.min(self.dist_to_depot, dim=1, keepdim=True)[0]
-        max_dist = torch.max(self.dist_to_depot, dim=1, keepdim=True)[0]
-        # Avoid division by zero
-        divisor = torch.clamp(max_dist - min_dist, min=1e-10)
-        # Normalize each row to [0,1] range
-        self.dist_to_depot = ((self.dist_to_depot - min_dist) / divisor).unsqueeze(-1)
+    # --------------------------------
+    # Problem Instance Generation
+    # --------------------------------
 
     def generate_params(
         self,
@@ -285,9 +348,9 @@ class CVRP(Problem):
             - demands: Node demands [batch, num_nodes+1] (depot demand=0)
         """
         if mode == "test":
-            self.manual_seed(0)  # Fixed seed for reproducibility
+            self.manual_seed(0)  # Fixed seed for reproducibility in test mode
 
-        if pb:
+        if pb:  # Use provided problem data
             return self._set_demands_coords(coords, demands)
 
         if self.clustering:
@@ -296,7 +359,14 @@ class CVRP(Problem):
             return self._generate_random_instances()
 
     def _generate_clustered_instances(self) -> Dict[str, torch.Tensor]:
-        """Generate problems with clustered customer locations."""
+        """
+        Generate problems with clustered customer locations.
+
+        Creates customer nodes grouped around cluster centers with small random offset.
+
+        Returns:
+            Dictionary with coordinates and demands
+        """
         # Create cluster centers
         centers = torch.rand(
             self.n_problems,
@@ -331,7 +401,14 @@ class CVRP(Problem):
         return {"coords": coords, "demands": demands}
 
     def _generate_random_instances(self) -> Dict[str, torch.Tensor]:
-        """Generate completely random problem instances."""
+        """
+        Generate completely random problem instances.
+
+        Coordinates are uniformly distributed in the unit square.
+
+        Returns:
+            Dictionary with coordinates and demands
+        """
         coords = torch.rand(
             self.n_problems,
             self.dim + 1,
@@ -343,7 +420,12 @@ class CVRP(Problem):
         return {"coords": coords, "demands": demands}
 
     def _generate_demands(self) -> torch.Tensor:
-        """Generate random customer demands (depot demand=0)."""
+        """
+        Generate random customer demands (depot demand=0).
+
+        Returns:
+            Tensor of demand values
+        """
         demands = torch.randint(
             1,
             10,
@@ -354,25 +436,134 @@ class CVRP(Problem):
         demands[:, 0] = 0  # Depot has no demand
         return demands
 
+    # --------------------------------
+    # State and Solution Representation
+    # --------------------------------
+
     def build_state_components(self, x, temp, time):
         """
         Build state components for the model.
+
+        Combines solution representation with problem features and metadata.
+
+        Args:
+            x: Solution tensor
+            temp: Temperature parameter
+            time: Time step information
+
+        Returns:
+            List of state component tensors
         """
         padding = max(0, x.size(1) - self.state_encoding.size(1))
         padded_coords = F.pad(self.state_encoding, (0, 0, 0, padding))
         is_depot = (x == 0).long()  # Identify depot visits
-        # Ensure padded_coords and padded_angles have the same shape
+
         return [
-            x,
-            padded_coords,
-            is_depot,
-            self.angles.gather(1, x),
-            self.dist_to_depot.gather(1, x),
-            *self.get_percentage_demands(x),
-            self.cost_per_route(x),
-            repeat_to(temp, x),
-            repeat_to(time, x),
+            x,  # Current solution
+            padded_coords,  # Node coordinates
+            is_depot,  # Depot indicator
+            self.angles.gather(1, x),  # Angles in solution order
+            self.dist_to_depot.gather(1, x),  # Distance to depot
+            *self.get_percentage_demands(x),  # Demand percentages
+            self.cost_per_route(x),  # Route segment costs
+            repeat_to(temp, x),  # Temperature parameter
+            repeat_to(time, x),  # Time information
         ]
+
+    @property
+    def state_encoding(self) -> torch.Tensor:
+        """
+        Get node coordinates as static problem features.
+
+        Returns:
+            Coordinates tensor
+        """
+        return self.coords
+
+    def get_coords(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Get coordinates in solution order.
+
+        Args:
+            solution: Solution tensor
+
+        Returns:
+            Ordered coordinates tensor
+        """
+        return torch.gather(
+            self.coords, 1, solution.expand(-1, -1, self.coords.size(-1))
+        )
+
+    def get_demands(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Get demands in solution order.
+
+        Args:
+            solution: Solution tensor
+
+        Returns:
+            Ordered demands tensor
+        """
+        return torch.gather(self.demands, 1, solution.squeeze(-1))
+
+    def generate_init_state(self) -> torch.Tensor:
+        """
+        Generate initial state including coordinates.
+
+        Returns:
+            Initial state tensor
+        """
+        solution = self.generate_init_solution()
+        return torch.cat([solution, self.state_encoding], -1)
+
+    def generate_init_solution(self, param: str = None) -> torch.Tensor:
+        """
+        Generate initial solutions using specified algorithm.
+
+        Args:
+            param: Optional algorithm parameter to override default
+
+        Returns:
+            Initial solution tensor
+
+        Raises:
+            ValueError: If unsupported initialization method specified
+        """
+        if param is not None:
+            self.params["INIT"] = param
+
+        if self.params["INIT"] == "random":
+            sol = random_init_batch(self).to(self.device)
+        elif self.params["INIT"] == "sweep":
+            sol = generate_sweep_solution(self).to(self.device)
+        elif self.params["INIT"] == "isolate":
+            sol = generate_isolate_solution(self).to(self.device)
+        elif self.params["INIT"] == "Clark_and_Wright":
+            sol = generate_Clark_and_Wright(self).to(self.device)
+        elif self.params["INIT"] == "nearest_neighbor":
+            sol = generate_nearest_neighbor(self).to(self.device)
+        elif self.params["INIT"] == "cheapest_insertion":
+            sol = cheapest_insertion(self).to(self.device)
+        elif self.params["INIT"] == "path_cheapest_arc":
+            sol = path_cheapest_arc(self).to(self.device)
+        elif self.params["INIT"] == "farthest_insertion":
+            sol = farthest_insertion(self).to(self.device)
+        else:
+            raise ValueError(
+                f"Unsupported initialization method: {self.params['INIT']}"
+            )
+
+        valid = self.is_feasible(sol).all()
+        if valid is False:
+            logger.warning(
+                "Generated initial solution is not feasible. "
+                "Consider using a different initialization method."
+            )
+        return sol
+
+    # --------------------------------
+    # Cost Calculation
+    # --------------------------------
 
     def cost(self, solution: torch.Tensor) -> torch.Tensor:
         """
@@ -413,13 +604,31 @@ class CVRP(Problem):
 
         return (route_costs / total_cost).unsqueeze(-1)
 
+    def get_edge_lengths_in_tour(self, solution: torch.Tensor) -> torch.Tensor:
+        """
+        Compute Euclidean distances between consecutive nodes in solution.
+
+        Args:
+            solution: Tensor [batch, num_nodes, 1]
+
+        Returns:
+            Tensor [batch, num_nodes] of inter-node distances
+        """
+        coords = self.get_coords(solution)
+        next_coords = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
+        return (coords - next_coords).norm(p=2, dim=-1)
+
+    # --------------------------------
+    # Solution Modification Heuristics
+    # --------------------------------
+
     def update(self, solution: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """
         Modify solution by applying heuristic action.
 
         Args:
             solution: Current solution tensor [batch, route_length, 1]
-            action: Pair of indices to modify [batch, 2]
+            action: Indices to modify [batch, 2] or [batch, 3] for mixed heuristic
 
         Returns:
             Tuple containing:
@@ -483,13 +692,36 @@ class CVRP(Problem):
         )
 
         # Perform swap
-        temp = solution[batch_idx, idx1]
+        temp = solution[batch_idx, idx1].clone()  # Clone to avoid in-place issues
         solution[batch_idx, idx1] = solution[batch_idx, idx2]
         solution[batch_idx, idx2] = temp
 
         return solution
 
-    def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    # def two_opt(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Perform 2-opt move by reversing segment between indices.
+
+    #     Args:
+    #         solution: Tensor [batch, num_nodes, 1]
+    #         indices: Tensor [batch, 2] containing segment endpoints
+
+    #     Returns:
+    #         Solution with reversed segment
+    #     """
+    #     left = torch.minimum(indices[:, 0], indices[:, 1])
+    #     right = torch.maximum(indices[:, 0], indices[:, 1])
+
+    #     # Create reversed indices for the segment
+    #     idx = torch.arange(solution.size(1), device=solution.device)
+    #     idx = idx.repeat(solution.size(0), 1)
+    #     reverse_mask = (idx >= left[:, None]) & (idx < right[:, None])
+    #     reversed_idx = left[:, None] + right[:, None] - 1 - idx
+    #     idx = torch.where(reverse_mask, reversed_idx, idx).to(torch.int64)
+
+    #     return torch.gather(solution, 1, idx.unsqueeze(-1))
+
+    def two_opt(self, x: torch.Tensor, a: torch.Tensor):
         """
         Perform 2-opt move by reversing segment between indices.
 
@@ -500,31 +732,40 @@ class CVRP(Problem):
         Returns:
             Solution with reversed segment
         """
-        left = torch.minimum(indices[:, 0], indices[:, 1])
-        right = torch.maximum(indices[:, 0], indices[:, 1])
-
-        # Create reversed indices for the segment
-        idx = torch.arange(solution.size(1), device=solution.device)
-        idx = idx.repeat(solution.size(0), 1)
-        reverse_mask = (idx >= left[:, None]) & (idx < right[:, None])
-        reversed_idx = left[:, None] + right[:, None] - 1 - idx
-        idx = torch.where(reverse_mask, reversed_idx, idx).to(torch.int64)
-
-        return torch.gather(solution, 1, idx.unsqueeze(-1))
+        # Two-opt moves invert a section of a tour. If we cut a tour into
+        # segments a and b then we can choose to invert either a or b. Due
+        # to the linear representation of a tour, we choose always to invert
+        # the segment that is stored contiguously.
+        left = torch.minimum(a[:, 0], a[:, 1])
+        right = torch.maximum(a[:, 0], a[:, 1])
+        ones = torch.ones((self.n_problems, 1), dtype=torch.long, device=self.device)
+        fidx = torch.arange(self.dim, device=self.device) * ones
+        # Reversed indices
+        offset = left + right - 1
+        ridx = torch.arange(0, -self.dim, -1, device=self.device) + offset[:, None]
+        # Set flipped section to all True
+        flip = torch.ge(fidx, left[:, None]) * torch.lt(fidx, right[:, None])
+        # Set indices to replace flipped section with
+        idx = (~flip) * fidx + flip * ridx
+        # Perform 2-opt move
+        return torch.gather(x, 1, idx.unsqueeze(-1))
 
     def insertion(self, solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
-        Vectorized version of the insertion operation.
+        Move a node to a new position in the solution.
 
-        solution: Tensor [batch, route_length, 1]
-        indices: Tensor [batch, 2] -> (node_position, new_position)
-        Returns: Tensor [batch, route_length, 1]
+        Args:
+            solution: Tensor [batch, route_length, 1]
+            indices: Tensor [batch, 2] -> (node_position, new_position)
+
+        Returns:
+            Modified solution tensor
         """
         batch_size, route_length, _ = solution.shape
         device = solution.device
 
-        # Remove last dimension and clamp new_pos
-        solution = solution.squeeze(-1)  # Ensure float dtype
+        # Remove last dimension and ensure proper type
+        solution = solution.squeeze(-1)
         node_pos = indices[:, 0]
         new_pos = indices[:, 1].clamp(0, route_length - 1)
 
@@ -566,19 +807,20 @@ class CVRP(Problem):
         self, solution: torch.Tensor, action: torch.Tensor
     ) -> torch.Tensor:
         """
-        Apply either swap or two_opt based on the third value in action.
+        Apply either the first or second heuristic based on action value.
 
         Args:
             solution: Tensor [batch, num_nodes, 1]
             action: Tensor [batch, 3] where:
-                   - action[:, 0:2] are the indices
-                   - action[:, 2] determines heuristic (swap if <0.5, two_opt otherwise)
+                - action[:, 0:2] are the indices
+                - action[:, 2] determines heuristic (heur_1 if <0.5,heur_2 otherwise)
 
         Returns:
             Modified solution
         """
         indices = action[:, :2]
         heuristic_choice = action[:, 2] >= 0.5  # Convert to boolean
+
         # Apply heur_1 where choice < 0.5
         heur_1 = self.heuristic_1(solution, indices)
         # Apply heur_2 where choice >= 0.5
@@ -591,76 +833,22 @@ class CVRP(Problem):
             heur_1,
         )
 
-    @property
-    def state_encoding(self) -> torch.Tensor:
-        """Node coordinates as static problem features."""
-        return self.coords
-
-    def get_coords(self, solution: torch.Tensor) -> torch.Tensor:
-        """Get coordinates in solution order."""
-        return torch.gather(
-            self.coords, 1, solution.expand(-1, -1, self.coords.size(-1))
-        )
-
-    def get_demands(self, solution: torch.Tensor) -> torch.Tensor:
-        """Get demands in solution order."""
-        return torch.gather(self.demands, 1, solution.squeeze(-1))
-
-    def generate_init_x(self, param: str = None) -> torch.Tensor:
-        """Generate initial solutions using specified algorithm."""
-        if param is not None:
-            self.params["INIT"] = param
-        if self.params["INIT"] == "random":
-            sol = random_init_batch(self).to(self.device)
-        elif self.params["INIT"] == "sweep":
-            sol = generate_sweep_solution(self).to(self.device)
-        elif self.params["INIT"] == "isolate":
-            sol = generate_isolate_solution(self).to(self.device)
-        elif self.params["INIT"] == "Clark_and_Wright":
-            sol = generate_Clark_and_Wright(self).to(self.device)
-        elif self.params["INIT"] == "nearest_neighbor":
-            sol = generate_nearest_neighbor(self).to(self.device)
-        elif self.params["INIT"] == "cheapest_insertion":
-            sol = cheapest_insertion(self).to(self.device)
-        elif self.params["INIT"] == "path_cheapest_arc":
-            sol = path_cheapest_arc(self).to(self.device)
-        elif self.params["INIT"] == "farthest_insertion":
-            sol = farthest_insertion(self).to(self.device)
-        else:
-            raise ValueError(
-                f"Unsupported initialization method: {self.params['INIT']}"
-            )
-        valid = self.is_feasible(sol).all()
-        if valid is False:
-            logger.warning(
-                "Generated initial solution is not feasible. "
-                "Consider using a different initialization method."
-            )
-        return sol
-
-    def generate_init_state(self) -> torch.Tensor:
-        """Generate initial state including coordinates."""
-        solution = self.generate_init_x()
-        return torch.cat([solution, self.state_encoding], -1)
-
-    def get_edge_lengths_in_tour(self, solution: torch.Tensor) -> torch.Tensor:
-        """
-        Compute Euclidean distances between consecutive nodes in solution.
-
-        Args:
-            solution: Tensor [batch, num_nodes, 1]
-
-        Returns:
-            Tensor [batch, num_nodes] of inter-node distances
-        """
-        coords = self.get_coords(solution)
-        next_coords = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
-        return (coords - next_coords).norm(p=2, dim=-1)
+    # --------------------------------
+    # Demand and Capacity Analysis
+    # --------------------------------
 
     def _compute_route_demands(
         self, demands: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute total demands per route segment."""
+        """
+        Compute total demands per route segment.
+
+        Args:
+            demands: Demand values tensor
+
+        Returns:
+            Tuple of (segment_demands, segment_ids)
+        """
         # Identify route segments
         mask = demands != 0
         segment_start = mask & ~torch.cat(
@@ -682,13 +870,20 @@ class CVRP(Problem):
         1. Node demand as fraction of route demand
         2. Route demand as fraction of vehicle capacity
         3. Node demand as fraction of vehicle capacity
+
+        Args:
+            solution: Solution tensor
+
+        Returns:
+            Tuple of three percentage tensors
         """
         demands = self.get_demands(solution)
         route_demands, route_ids = self._compute_route_demands(demands)
 
         node_pct = torch.nan_to_num(demands / route_demands, nan=0.0)
         route_pct = route_demands / self.capacity
-        node_cap_pct = route_ids / self.capacity
+        node_cap_pct = demands / self.capacity
+
         return (
             node_pct.unsqueeze(-1),
             route_pct.unsqueeze(-1),
@@ -700,8 +895,7 @@ class CVRP(Problem):
         Calculate capacity utilization score for each solution.
 
         For each route in a solution, computes the ratio of total demand
-        to vehicle capacity,
-        then averages these ratios across all routes to get a score between 0 and 1.
+        to vehicle capacity, then averages these ratios across all routes.
         Higher scores indicate better capacity utilization.
 
         Args:
@@ -758,7 +952,7 @@ class CVRP(Problem):
 
     def is_feasible(self, solution: torch.Tensor) -> torch.Tensor:
         """
-        Vectorized check if the solution respects capacity constraints for all routes.
+        Check if the solution respects capacity constraints for all routes.
 
         Args:
             solution: Tensor [batch, route_length, 1] representing routes

@@ -3,7 +3,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from scheduler import Scheduler
+from sa import Scheduler
 import matplotlib.pyplot as plt
 
 

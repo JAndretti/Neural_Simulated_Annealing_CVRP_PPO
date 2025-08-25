@@ -27,12 +27,10 @@ from tqdm import tqdm
 # --------------------------------
 # Import custom modules
 # --------------------------------
-from HP import _HP, get_script_arguments
-from Logger import WandbLogger
+from setup import _HP, get_script_arguments, WandbLogger
 from model import CVRPActor, CVRPActorPairs, CVRPCritic
-from ppo import ppo
+from ppo import ppo, ReplayBuffer
 from problem import CVRP
-from replay import ReplayBuffer
 from sa import sa_train
 
 # --------------------------------
@@ -387,7 +385,7 @@ def initialize_test_problem(
 
     # Generate initial solutions
     init_method = "isolate" if config["CHANGE_INIT_METHOD"] else config["INIT"]
-    initial_test_solutions = test_problem.generate_init_x(init_method)
+    initial_test_solutions = test_problem.generate_init_solution(init_method)
 
     # Set heuristic method
     test_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
@@ -521,7 +519,7 @@ def main(config: Dict[str, Any]) -> None:
             training_problem.set_params(training_params)
 
             # Generate initial solutions for training
-            initial_training_solutions = training_problem.generate_init_x(
+            initial_training_solutions = training_problem.generate_init_solution(
                 config["INIT"]
             )
 

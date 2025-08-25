@@ -7,4 +7,7 @@ device = (
     else "mps" if torch.backends.mps.is_available() else "cpu"
 )
 TSP_actor = load_model("src/TSP/model_TSP.pt", device=device)
-print(f"TSP actor loaded on {device}")
+
+__all__ = ["get_features", "load_model", "TSP_actor"]
+
+# print(f"TSP actor loaded on {device}")

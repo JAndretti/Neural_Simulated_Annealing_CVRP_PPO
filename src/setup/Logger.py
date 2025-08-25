@@ -7,7 +7,7 @@ import wandb
 import yaml
 
 
-from HP import _HP
+from .HP import _HP
 from model import CVRPActor
 
 
