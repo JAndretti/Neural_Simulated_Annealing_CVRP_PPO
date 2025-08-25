@@ -88,6 +88,9 @@ def sa_baseline(
             action = torch.randint(
                 0, shape_action, (best_solution.shape[0], 2), device=device
             )
+            if config["HEURISTIC"] == "mix":
+                heur = torch.randint(0, 2, (best_solution.shape[0], 1), device=device)
+                action = torch.cat((action, heur), dim=1)
             proposed_solution, is_valid = problem.update(current_solution, action)
             proposed_cost = problem.cost(proposed_solution)
             # Calculate improvement
