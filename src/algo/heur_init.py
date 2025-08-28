@@ -786,6 +786,7 @@ def generate_Clark_and_Wright(cvrp_instance):
                     pool.imap(_clark_wright_worker, args_list),
                     total=batch_size,
                     desc="Clark and Wright Init",
+                    leave=False,
                 )
             )
     else:

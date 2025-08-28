@@ -24,21 +24,22 @@ from algo import test_or_tools
 
 # --- Configurations ---
 
-MODEL_NAME = "20250630_225812_yhajndhh"
+MODEL_NAME = "20250827_172131_57xbb0z1"
 MODEL_DIR = glob(
     os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL_NAME)
 )[0]
 SEED = 0
 
 cfg = {
-    "PROBLEM_DIM": 500,
+    "PROBLEM_DIM": 100,
     "MAX_LOAD": 50,
     "N_PROBLEMS": 1,
-    "OUTER_STEPS": 20000,
+    "OUTER_STEPS": 10000,
     "DEVICE": "cpu",
-    "INIT": "Clark_and_Wright",
+    "INIT": "isolate",
     "SEED": 0,
     "LOAD_PB": False,
+    "STOP_TEMP": 0.01,
 }
 
 
@@ -188,7 +189,7 @@ def main():
     print(("SA started"))
     # Measure execution time
     start_time = time.time()
-    init_x = problem.generate_init_x(CFG["INIT"])
+    init_x = problem.generate_init_solution(CFG["INIT"])
     # Run experiment with record_state=True
     result = sa_train(actor, problem, init_x, CFG, record_state=True, baseline=False)
 
@@ -205,7 +206,7 @@ def main():
     print(f"Solution found is feasible: {problem.is_feasible(result_2opt).item()}")
 
     start_time = time.time()
-    init_x = problem.generate_init_x(CFG["INIT"])
+    init_x = problem.generate_init_solution(CFG["INIT"])
     result_baseline = sa_train(
         actor, problem, init_x, CFG, baseline=True, record_state=True
     )
@@ -235,6 +236,7 @@ def main():
         "demands": problem.demands.cpu(),
         "MAX_LOAD": [CFG["MAX_LOAD"]],
         "OR_DIM": [CFG["PROBLEM_DIM"]],
+        "names": ["Test_Instance"],
     }
     print(
         f"Testing with OR-Tools with time limit of {or_tools_cfg['OR_TOOLS_TIME']} ",

@@ -49,7 +49,7 @@ def calculate_dist_route(route, distance_matrix):
 if __name__ == "__main__":
 
     cfg = {
-        "OR_TOOLS_TIME": 30,  # Time limit in seconds
+        "OR_TOOLS_TIME": 60,  # Time limit in seconds
     }
     logger.info(f"Or-Tools solver configuration: {cfg}")
 

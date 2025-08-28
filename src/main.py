@@ -586,9 +586,6 @@ def main(config: Dict[str, Any]) -> None:
                     config=config,
                 )
 
-            # Update progress bar
-            progress_bar.set_description(f"Test loss: {current_test_loss:.4f}")
-
             # Model checkpointing
             if config["LOG"]:
                 model_name = f"{config['PROJECT']}_{config['GROUP']}_actor"
@@ -609,7 +606,14 @@ def main(config: Dict[str, Any]) -> None:
                 else:
                     early_stopping_counter = 0
                     best_loss_value = min(current_test_loss.item(), best_loss_value)
-
+                if early_stopping_counter == 4:
+                    config["STOP_TEMP"] /= 10
+                    config["INIT_TEMP"] /= 10
+                    if config["VERBOSE"]:
+                        logger.info(
+                            f"Reduced STOP_TEMP to {config['STOP_TEMP']:.4f} "
+                            f"at epoch {epoch}"
+                        )
                 # Trigger early stopping if no improvement for too long
                 if early_stopping_counter > 5:
                     logger.warning(
@@ -617,6 +621,14 @@ def main(config: Dict[str, Any]) -> None:
                         f"with loss {best_loss_value:.4f}"
                     )
                     break
+
+            # Update progress bar
+            progress_bar.set_description(
+                (
+                    f"Test loss: {current_test_loss:.4f}, "
+                    f"EarlyStop Counter: {early_stopping_counter}"
+                )
+            )
 
     logger.info("Training completed successfully")
 

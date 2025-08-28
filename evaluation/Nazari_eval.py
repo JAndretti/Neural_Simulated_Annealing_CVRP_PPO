@@ -5,6 +5,7 @@ import warnings
 import glob2
 import sys
 import time  # Add import for time measurement
+import numpy as np  # Add for random problem generation
 
 from func import (
     get_HP_for_model,
@@ -15,7 +16,7 @@ from func import (
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from sa import sa_test, sa_baseline
+from sa import sa_test
 from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 from loguru import logger  # Enhanced logging capabilities
@@ -38,57 +39,64 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "features2"
-rapid = False  # Set to True for faster execution, False for full evaluation
-dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
+FOLDER = "TRAIN2"
+N_PROBLEMS = 10000  # Number of random problems to generate for each configuration
+# VRP configurations: (name, customers, capacity)
+VRP_CONFIGS = [
+    ("VRP10", 10, 20),
+    ("VRP20", 20, 30),
+    ("VRP50", 50, 40),
+    ("VRP100", 100, 50),
+]
 ###########################################################################
 
-if dim not in [50, 100, 500, 1000]:
-    raise ValueError("Invalid problem dimension. Choose from [50, 100, 500, 1000].")
-
-if rapid:
-    logger.info("Running in rapid mode for quick evaluation.")
-else:
-    BDD_PATH = f"generated_problem/gen{dim}.pt"
-    logger.info(f"Running evaluation on {BDD_PATH}")
+logger.info(
+    f"Testing {len(VRP_CONFIGS)} VRP configurations with {N_PROBLEMS} problems each"
+)
 
 # Constants
 BASE_PATH = "res/" + FOLDER + "/"
 if not os.path.exists(BASE_PATH):
     os.makedirs(BASE_PATH, exist_ok=True)
 PATH = "wandb/Neural_Simulated_Annealing/"
-RESULTS_FILE_ALL_MODEL = BASE_PATH + (
-    "res_all_model_rapid.csv" if rapid else f"res_all_model_{dim}.csv"
-)
-RESULTS_FILE = (
-    BASE_PATH + "res_model_rapid.csv" if rapid else BASE_PATH + f"res_model_{dim}.csv"
-)
+RESULTS_FILE_ALL_MODEL = BASE_PATH + "res_all_model_multi_vrp.csv"
+RESULTS_FILE = BASE_PATH + "res_model_multi_vrp.csv"
 MODEL_NAMES = glob2.glob(os.path.join(PATH, FOLDER, "models", "*"))
 
-if not rapid:
-    bdd = torch.load(BDD_PATH, map_location="cpu")
-    coords = bdd["node_coords"]
-    demands = bdd["demands"]
-    capacities = bdd["capacity"]
-else:
-    coords = None
-    demands = None
-    capacities = None
+
+# Generate random problems
+def generate_random_cvrp_problems(n_problems, problem_size, capacity, device, seed=42):
+    """Generate random CVRP problems."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    # Generate coordinates (depot + customers)
+    coords = torch.rand(n_problems, problem_size + 1, 2, device=device)
+
+    # Generate demands (depot has 0 demand, customers have demand 1-9)
+    demands = torch.randint(
+        1, 10, (n_problems, problem_size + 1), device=device, generator=generator
+    )
+    demands[:, 0] = 0
+    # Set capacity for all problems
+    capacities = torch.full((n_problems, 1), capacity, device=device)
+
+    return coords, demands, capacities
+
 
 # Configuration
 cfg = {
-    "PROBLEM_DIM": 50 if rapid else coords.shape[1] - 1,
-    "N_PROBLEMS": 1000 if rapid else capacities.shape[0],
-    "OUTER_STEPS": 2000 if rapid else 10000,
-    "MAX_LOAD": 20,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
     "SEED": 0,
-    "LOAD_PB": False if rapid else True,
+    "LOAD_PB": True,
 }
+
+generator = torch.Generator(device=cfg["DEVICE"])
+generator.manual_seed(cfg["SEED"])
 
 logger.info(f"Device set to {cfg['DEVICE']}")
 
@@ -123,13 +131,29 @@ def load_results_models():
     return df
 
 
-def perform_test(
-    model_name: str,
-):
-    """Main execution function."""
-    logger.info(f"Processing model: {model_name}")
+def perform_test(model_name: str, vrp_config):
+    """Main execution function for a specific VRP configuration."""
+    config_name, problem_size, capacity = vrp_config
+    logger.info(f"Processing model: {model_name} on {config_name}")
+
+    # Update configuration for this VRP size
+    current_cfg = cfg.copy()
+    current_cfg.update(
+        {
+            "PROBLEM_DIM": problem_size,
+            "N_PROBLEMS": N_PROBLEMS,
+            "OUTER_STEPS": problem_size * 100,
+            "MAX_LOAD": capacity,
+        }
+    )
+
+    # Generate problems for this configuration
+    coords, demands, capacities = generate_random_cvrp_problems(
+        N_PROBLEMS, problem_size, capacity, cfg["DEVICE"]
+    )
+
     # init HP
-    HP = init_problem_parameters(model_name, cfg)
+    HP = init_problem_parameters(model_name, current_cfg)
 
     problem, _, _ = init_pb(HP, coords, demands, capacities)
 
@@ -166,22 +190,16 @@ def perform_test(
         replay_buffer=None,
         baseline=False,
         greedy=False,
-        desc_tqdm="NSA Model",
+        desc_tqdm=f"NSA Model {config_name}",
     )
     execution_time = time.time() - start_time
     init_cost = torch.mean(problem.cost(init_x))
     final_cost = torch.mean(test["min_cost"])
-    test_baseline = sa_baseline(
-        problem,
-        init_x,
-        HP,
-        desc_tqdm="SA Baseline",
-    )
-    final_cost_baseline = torch.mean(test_baseline["min_cost"])
+
     # Clear CUDA cache if using GPU
     if cfg["DEVICE"] == "cuda":
         torch.cuda.empty_cache()
-    return init_cost, final_cost, final_cost_baseline, execution_time
+    return init_cost, final_cost, execution_time
 
 
 def extract_differing_keys(model_names):
@@ -222,77 +240,81 @@ if __name__ == "__main__":
     # Initialize results DataFrame with dynamic columns
     columns = [
         "model",
+        "vrp_config",
+        "problem_size",
+        "capacity",
         "initial_cost",
         "final_cost",
-        "final_cost_baseline",
         "execution_time",
     ] + list(differing_keys)
     new_df, RESULTS_FILE = initialize_results_df(columns)
     all_models_results_df = load_results_models()
 
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
-        init_cost, final_cost, final_cost_baseline, execution_time = perform_test(
-            model_name
-        )
-        # Extract HP values for the current model
-        hp_values = add_hp_to_results(model_name, differing_keys)
-        # Add results to DataFrame
-        new_df = pd.concat(
-            [
-                new_df,
-                pd.DataFrame(
-                    {
-                        "model": [model_name.split("/")[-1]],
-                        "initial_cost": [init_cost.item()],
-                        "final_cost": [final_cost.item()],
-                        "final_cost_baseline": [final_cost_baseline.item()],
-                        "execution_time": [execution_time],
-                        **hp_values,
-                    }
-                ),
-            ],
-            ignore_index=True,
-        )
-        # Save results for all models
-        all_models_results_df = pd.concat(
-            [
-                all_models_results_df,
-                pd.DataFrame(
-                    {
-                        "model": [FOLDER + "/" + model_name.split("/")[-1]],
-                        "final_cost": [final_cost.item()],
-                    }
-                ),
-            ],
-            ignore_index=True,
-        )
-    # # Load OR-Tools solution mean distance and add to DataFrame
-    # if os.path.exists(BDD_OR_TOOLS_PATH):
-    #     or_tools_data = torch.load(BDD_OR_TOOLS_PATH, map_location="cpu")
-    #     mean_or_distances = or_tools_data.get("mean_or_distances", float("nan"))
-    # else:
-    #     mean_or_distances = float("nan")
+        for vrp_config in VRP_CONFIGS:
+            config_name, problem_size, capacity = vrp_config
+            init_cost, final_cost, execution_time = perform_test(model_name, vrp_config)
 
-    # # Prepare a row for OR-Tools
-    # or_tools_row = {
-    #     "model": "or_tools",
-    #     "initial_cost": float("nan"),
-    #     "final_cost": mean_or_distances.item(),
-    #     "execution_time": 60,
-    # }
-    # for key in differing_keys:
+            # Extract HP values for the current model
+            hp_values = add_hp_to_results(model_name, differing_keys)
+
+            # Add results to DataFrame
+            new_df = pd.concat(
+                [
+                    new_df,
+                    pd.DataFrame(
+                        {
+                            "model": [model_name.split("/")[-1]],
+                            "vrp_config": [config_name],
+                            "problem_size": [problem_size],
+                            "capacity": [capacity],
+                            "initial_cost": [init_cost.item()],
+                            "final_cost": [final_cost.item()],
+                            "execution_time": [execution_time],
+                            **hp_values,
+                        }
+                    ),
+                ],
+                ignore_index=True,
+            )
+
+            # Save results for all models
+            all_models_results_df = pd.concat(
+                [
+                    all_models_results_df,
+                    pd.DataFrame(
+                        {
+                            "model": [
+                                f"{FOLDER}/{model_name.split('/')[-1]}_{config_name}"
+                            ],
+                            "final_cost": [final_cost.item()],
+                        }
+                    ),
+                ],
+                ignore_index=True,
+            )
+
+    # Remove duplicate rows based on the 'model' column
+    # new_df = new_df.drop_duplicates(subset=["model"], keep="first")
+    # all_models_results_df = all_models_results_df.drop_duplicates(
+    #     subset=["model"], keep="first"
+    # )
+
+    # Save updated results
+    new_df.to_csv(RESULTS_FILE, index=False)
+    print("Results saved to", RESULTS_FILE)
+    logger.info("Results DataFrame:")
+    print(new_df.head())
+
+    all_models_results_df.to_csv(RESULTS_FILE_ALL_MODEL, index=False)
+    logger.info("All models results DataFrame:")
+    print(all_models_results_df.head())
     #     or_tools_row[key] = float("nan")
 
     # new_df = pd.concat(
     #     [new_df, pd.DataFrame([or_tools_row])],
     #     ignore_index=True,
     # )
-
-    # Remove duplicate rows based on the 'model' column
-    new_df = new_df.drop_duplicates(subset=["model"], keep="first")
-    all_models_results_df = all_models_results_df.drop_duplicates(
-        subset=["model"], keep="first"
-    )
 
     # Save updated results
     new_df.to_csv(RESULTS_FILE, index=False)

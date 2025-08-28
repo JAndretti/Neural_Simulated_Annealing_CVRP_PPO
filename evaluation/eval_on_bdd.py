@@ -30,11 +30,11 @@ logger.add(
 
 # TO FILL
 ###########################################################################
-MODEL = "20250630_165952_txdtlez8"
+MODEL = "20250828_125518_0ci12f1i"
 cfg = {
     "PROBLEM_DIM": 100,
     "N_PROBLEMS": 10000,
-    "OUTER_STEPS": 20000,
+    "OUTER_STEPS": 10_000,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
@@ -215,7 +215,7 @@ if __name__ == "__main__":
         replay_buffer=None,
         baseline=True if BASELINE else False,
         greedy=False,
-        device=CFG["DEVICE"],
+        # device=CFG["DEVICE"],
     )
     final_cost = torch.mean(test["min_cost"])
     logger.info(f"Simulated annealing completed. Final cost: {final_cost:.4f}")
@@ -235,8 +235,11 @@ if __name__ == "__main__":
     )
 
     logger.info("Saving results...")
-    df = init_res("res/models_res_on_bdd.csv", names=names)
+    FOLDER = FOLDER.split("/")[0]
+    save_path = f"res/{FOLDER}/models_res_on_bdd.csv"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    df = init_res(save_path, names=names)
     df = pd.merge(df, tmp_df, on="name", how="outer")
-    df.to_csv("res/models_res_on_bdd.csv", index=False)
-    logger.info("Results saved to res/models_res_on_bdd.csv.")
-    print("Results saved to res/models_res_on_bdd.csv")
+    df.to_csv(save_path, index=False)
+    logger.info(f"Results saved to {save_path}.")
+    print(f"Results saved to {save_path}.")
