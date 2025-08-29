@@ -293,7 +293,7 @@ def calculate_reward(
         return None
 
     if config["REWARD"] == "immediate":
-        reward_signal = actual_improvement.unsqueeze(1)
+        reward_signal = (actual_improvement / initial_cost).unsqueeze(-1)
 
         # Apply negative reward for invalid actions
         if config["NEG_REWARD"] != 0:
@@ -301,25 +301,10 @@ def calculate_reward(
                 reward_signal * is_valid + (1 - is_valid) * -config["NEG_REWARD"]
             )
 
-    elif config["REWARD"] == "last":
-        if last_step:
-            reward_signal = (initial_cost - best_cost).unsqueeze(1)
-            reward_signal[reward_signal == 0] = -1
-        else:
-            reward_signal = torch.zeros_like(
-                best_cost, device=best_cost.device
-            ).unsqueeze(1)
-
     elif config["REWARD"] == "min_cost":
         reward_signal = -best_cost.view(-1, 1)
     elif config["REWARD"] == "primal":
         reward_signal = -cumulative_cost.view(-1, 1)
-
-        # Normalize rewards
-    if config["NORMALIZE_REWARD"]:
-        max_abs_reward = torch.max(torch.abs(reward_signal))
-        if max_abs_reward > 0:
-            reward_signal = reward_signal / max_abs_reward
 
     return reward_signal
 
@@ -555,6 +540,13 @@ def sa_train(
     if replay_buffer is not None and len(replay_buffer) > 0:
         final_transition = replay_buffer.pop()
         replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
+
+        if config["REWARD_LAST"]:
+            reward_final = (
+                (opt_state["initial_cost"] - opt_state["best_cost"])
+                / opt_state["initial_cost"]
+            ).unsqueeze(-1)
+            replay_buffer.apply_final_reward(reward_final, config["ALPHA_LAST"])
 
     final_capacity_left = problem.capacity_utilization(opt_state["best_solution"])
 

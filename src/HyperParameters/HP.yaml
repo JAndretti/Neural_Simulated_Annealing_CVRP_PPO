@@ -29,11 +29,11 @@ CHANGE_INIT_METHOD: False               # Change initial method during training
 INIT_LIST: ["random","isolate","sweep","Clark_and_Wright","nearest_neighbor", "cheapest_insertion", "path_cheapest_arc"]                          # List of initial solution methods
 
 # =============== Reward ===============
-NORMALIZE_REWARD: False                # Normalize rewards
 CAPACITY_REWARD: False                  # Reward for capacity usage
 CAPACITY_REWARD_FACTOR: 10             # Scaling factor for capacity reward
 NEG_REWARD: 0                          # Negative reward for invalid solutions
 REWARD: "immediate"                    # Reward calculation method
+REWARD_LAST: True
 
 # =============== Model Architecture ===============
 ENTRY: 15                              # Input dimension

@@ -480,6 +480,9 @@ def main(config: Dict[str, Any]) -> None:
     # Initialize test problem environment
     test_problem, initial_test_solutions = initialize_test_problem(config, device)
 
+    if config["REWARD_LAST"]:
+        config["ALPHA_LAST"] = 0
+
     # Initialize neural network models
     actor, critic = initialize_models(config, device)
 
@@ -550,6 +553,8 @@ def main(config: Dict[str, Any]) -> None:
                     actor, test_problem, initial_test_solutions, config
                 )
                 current_test_loss = torch.mean(test_results["min_cost"])
+            if epoch > 20 and config["REWARD_LAST"]:
+                config["ALPHA_LAST"] = min(config["ALPHA_LAST"] + 0.0001, 0.01)
 
                 # Toggle clustering if alternating clustering is enabled
                 if config["ALT_CLUSTERING"]:
@@ -606,14 +611,7 @@ def main(config: Dict[str, Any]) -> None:
                 else:
                     early_stopping_counter = 0
                     best_loss_value = min(current_test_loss.item(), best_loss_value)
-                if early_stopping_counter == 4:
-                    config["STOP_TEMP"] /= 10
-                    config["INIT_TEMP"] /= 10
-                    if config["VERBOSE"]:
-                        logger.info(
-                            f"Reduced STOP_TEMP to {config['STOP_TEMP']:.4f} "
-                            f"at epoch {epoch}"
-                        )
+
                 # Trigger early stopping if no improvement for too long
                 if early_stopping_counter > 5:
                     logger.warning(

@@ -71,6 +71,42 @@ class ReplayBuffer:
         )
         self.memory.append(transition)
 
+    def apply_final_reward(self, r_final: float, alpha: float) -> None:
+        """
+        Modifies all rewards in the buffer by adding a scaled final reward.
+        This implements the reward shaping: R_total = R_immédiat + α * R_final
+
+        Args:
+            r_final: The final reward value to add to all transitions
+            alpha: The scaling factor for the final reward
+        """
+        if len(self.memory) == 0:
+            return
+
+        # Calculate the additional reward component
+        additional_reward = alpha * r_final
+
+        # Create a new deque to store modified transitions
+        new_memory = deque([], maxlen=self.capacity)
+
+        for transition in self.memory:
+            # Modify the reward tensor by adding the additional reward
+            modified_reward = transition.reward + additional_reward
+
+            # Create a new transition with the modified reward
+            modified_transition = Transition(
+                transition.state,
+                transition.action,
+                transition.next_state,
+                modified_reward,
+                transition.old_log_probs,
+                transition.gamma,
+            )
+            new_memory.append(modified_transition)
+
+        # Replace the memory with the modified transitions
+        self.memory = new_memory
+
     def sample(self, batch_size: int) -> Transition:
         """
         Randomly sample a batch of transitions.
