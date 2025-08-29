@@ -555,6 +555,8 @@ def main(config: Dict[str, Any]) -> None:
                 current_test_loss = torch.mean(test_results["min_cost"])
             if epoch > 20 and config["REWARD_LAST"]:
                 config["ALPHA_LAST"] = min(config["ALPHA_LAST"] + 0.0001, 0.01)
+                if config["VERBOSE"]:
+                    logger.info(f"Updated ALPHA_LAST to {config['ALPHA_LAST']}")
 
                 # Toggle clustering if alternating clustering is enabled
                 if config["ALT_CLUSTERING"]:
