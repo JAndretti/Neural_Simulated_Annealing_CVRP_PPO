@@ -84,7 +84,7 @@ class ReplayBuffer:
             return
 
         # Calculate the additional reward component
-        additional_reward = alpha * r_final
+        additional_reward = (alpha * r_final).to(self.device)
 
         # Create a new deque to store modified transitions
         new_memory = deque([], maxlen=self.capacity)
