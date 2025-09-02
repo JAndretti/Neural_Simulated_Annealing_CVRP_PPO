@@ -295,6 +295,9 @@ def calculate_reward(
     if config["REWARD"] == "immediate":
         reward_signal = (actual_improvement / initial_cost).unsqueeze(-1)
 
+    if config["REWARD_LAST"] and last_step:
+        reward_signal += ((initial_cost - best_cost) / initial_cost).unsqueeze(-1)
+
         # Apply negative reward for invalid actions
         if config["NEG_REWARD"] != 0:
             reward_signal = (
@@ -540,13 +543,6 @@ def sa_train(
     if replay_buffer is not None and len(replay_buffer) > 0:
         final_transition = replay_buffer.pop()
         replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
-
-        if config["REWARD_LAST"]:
-            reward_final = (
-                (opt_state["initial_cost"] - opt_state["best_cost"])
-                / opt_state["initial_cost"]
-            ).unsqueeze(-1)
-            replay_buffer.apply_final_reward(reward_final, config["ALPHA_LAST"])
 
     final_capacity_left = problem.capacity_utilization(opt_state["best_solution"])
 

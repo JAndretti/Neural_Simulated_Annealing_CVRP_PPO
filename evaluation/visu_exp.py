@@ -198,6 +198,15 @@ def main():
     result_2opt = cvrp_2opt_vectorized(
         result["best_x"], coordinates, max_iterations=10000
     )
+    costs = [c.item() for c in result["costs"]]
+    temperatures = [t.item() for t in result["temperature"]]
+    acceptance = [
+        a.float().mean().item() if hasattr(a, "float") else float(a)
+        for a in result["acceptance"]
+    ]
+    invalid_moves = CFG["OUTER_STEPS"] - result["is_valid"].sum().item()
+
+    del result
 
     # Calculate and print execution time
     execution_time = time.time() - start_time
@@ -252,13 +261,7 @@ def main():
         or_tools_cost = torch.tensor([float("inf")])
         or_tools_sol = None
     # Retrieve cost, temperature, and acceptance evolution
-    costs = [c.item() for c in result["costs"]]
     costs_baseline = [c.item() for c in result_baseline["costs"]]
-    temperatures = [t.item() for t in result["temperature"]]
-    acceptance = [
-        a.float().mean().item() if hasattr(a, "float") else float(a)
-        for a in result["acceptance"]
-    ]
 
     # Compute cumulative acceptance (running mean)
     acceptance_cum = []
@@ -268,19 +271,6 @@ def main():
             count_ones += 1
         acceptance_cum.append(count_ones / (i + 1))
 
-    # If HEURISTIC == "mix", compute the heuristic usage ratio
-    ratio_curve = None
-    if CFG["HEURISTIC"] == "mix" and "heuristic" in result:
-        h_choices = result["heuristic"]
-        # Compute the running ratio of 1s (e.g., usage of one heuristic) over total
-        # (1s + 0s)
-        ratio_curve = []
-        count_ones = 0
-        for i, h in enumerate(h_choices):
-            if h == 1:
-                count_ones += 1
-            ratio_curve.append(count_ones / (i + 1))
-
     # Find the first index where the minimum cost is reached
     min_cost = min(costs)
     min_idx = costs.index(min_cost)
@@ -288,7 +278,6 @@ def main():
     print(f"Initial cost after 2-opt: {problem.cost(init_x_2opt).item():.4f}")
     print(f"Minimum cost: {min_cost:.4f} at step {min_idx}")
     print(f"Minimum cost after 2-opt: {min_cost_2opt:.4f}")
-    invalid_moves = CFG["OUTER_STEPS"] - result["is_valid"].sum().item()
     print(
         f"Number of invalid moves (refused): "
         f"{invalid_moves} / {CFG['OUTER_STEPS']}"
@@ -330,26 +319,13 @@ def main():
     ax3.set_ylabel("Cumulative Acceptance", color="tab:orange")
     ax3.tick_params(axis="y", labelcolor="tab:orange")
 
-    # Fourth axis for heuristic ratio if mix
-    if ratio_curve is not None:
-        ax4 = ax1.twinx()
-        ax4.spines.right.set_position(("axes", 1.34))
-        ax4.plot(
-            ratio_curve, color="tab:green", label="Heuristic Ratio (mix)", alpha=0.8
-        )
-        ax4.set_ylabel("Heuristic Ratio", color="tab:green")
-        ax4.tick_params(axis="y", labelcolor="tab:green")
-
     # Combined legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     lines3, labels3 = ax3.get_legend_handles_labels()
     all_lines = lines1 + lines2 + lines3
     all_labels = labels1 + labels2 + labels3
-    if ratio_curve is not None:
-        lines4, labels4 = ax4.get_legend_handles_labels()
-        all_lines += lines4
-        all_labels += labels4
+
     ax1.legend(
         all_lines,
         all_labels,

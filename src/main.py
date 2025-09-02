@@ -553,16 +553,6 @@ def main(config: Dict[str, Any]) -> None:
                     actor, test_problem, initial_test_solutions, config
                 )
                 current_test_loss = torch.mean(test_results["min_cost"])
-            if (
-                (epoch > 100 and config["REWARD_LAST"])
-                or early_stopping_counter > 1
-                and epoch % 10 == 0
-            ):
-                config["ALPHA_LAST"] = min(
-                    config["ALPHA_LAST"] + config["REWARD_LAST_ADD"], 0.1
-                )
-                if config["VERBOSE"]:
-                    logger.info(f"Updated ALPHA_LAST to {config['ALPHA_LAST']:.4f}")
 
                 # Toggle clustering if alternating clustering is enabled
                 if config["ALT_CLUSTERING"]:

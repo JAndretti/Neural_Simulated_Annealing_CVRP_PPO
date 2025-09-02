@@ -1,7 +1,7 @@
 # =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"  # Project name
-GROUP: "LAST"              # Experimentation group
-LOG: True                             # Enable or disable logging with WandB
+GROUP: "R_LAST"              # Experimentation group
+LOG: False                             # Enable or disable logging with WandB
 VERBOSE: False                          # Verbose output during training
 
 # =============== Hardware & Setup ===============
@@ -23,7 +23,7 @@ HEURISTIC: "insertion"                 # Local search method
 MIX1: "swap"                           # First local search method if HEURISTIC is "mix"
 MIX2: "insertion"                      # Second local search method if HEURISTIC is "mix"
 
-INIT: "isolate"                        # Initial solution method
+INIT: "Clark_and_Wright"                        # Initial solution method
 UPDATE_METHOD: "free"                  # Update method after heuristic
 CHANGE_INIT_METHOD: False               # Change initial method during training
 INIT_LIST: ["random","isolate","sweep","Clark_and_Wright"] # List of initial solution methods
@@ -34,7 +34,6 @@ CAPACITY_REWARD_FACTOR: 10             # Scaling factor for capacity reward
 NEG_REWARD: 0                          # Negative reward for invalid solutions
 REWARD: "immediate"                    # Reward calculation method
 REWARD_LAST: True
-REWARD_LAST_ADD: 0.00005
 
 # =============== Model Architecture ===============
 ENTRY: 15                              # Input dimension
