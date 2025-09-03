@@ -22,6 +22,31 @@ def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
     return (value - min_value) / (max_value - min_value)
 
 
+def scale_positive_negative(tensor):
+    """
+    Scale positive values between 0 and 1 and negative values between -1 and 0.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to scale.
+
+    Returns:
+        torch.Tensor: Scaled tensor.
+    """
+    # Separate positive and negative parts
+    positive_part = torch.clamp(tensor, min=0)
+    negative_part = torch.clamp(tensor, max=0)
+
+    # Scale positive values
+    if positive_part.max() > 0:
+        positive_part = positive_part / positive_part.max()
+
+    # Scale negative values
+    if negative_part.min() < 0:
+        negative_part = negative_part / abs(negative_part.min())
+
+    return positive_part + negative_part
+
+
 # ================================
 # ACCEPTANCE CRITERIA
 # ================================
@@ -75,7 +100,7 @@ def initialize_optimization_state(
     best_cost = current_cost = problem.cost(best_solution)
     capacity_left = problem.capacity_utilization(best_solution)
     initial_cost = best_cost.clone()
-    cumulative_cost = best_cost.clone()
+    cumulative_cost = best_cost.clone() / initial_cost
     best_cost_step = torch.zeros_like(best_cost, dtype=torch.long)
 
     return {
@@ -232,6 +257,7 @@ def update_current_solution(
 def update_best_solution(
     current_cost: torch.Tensor,
     current_solution: torch.Tensor,
+    initial_cost: torch.Tensor,
     best_cost: torch.Tensor,
     best_solution: torch.Tensor,
     step: int,
@@ -248,7 +274,7 @@ def update_best_solution(
     )
     new_best_cost_step = torch.max(is_improvement * (step + 1), best_cost_step)
     new_best_cost = torch.minimum(current_cost, best_cost)
-    new_cumulative_cost = cumulative_cost + new_best_cost
+    new_cumulative_cost = cumulative_cost + (new_best_cost / initial_cost)
 
     return new_best_solution, new_best_cost, new_best_cost_step, new_cumulative_cost
 
@@ -292,22 +318,24 @@ def calculate_reward(
     if config["METHOD"] != "ppo":
         return None
 
-    if config["REWARD"] == "immediate":
-        reward_signal = (actual_improvement / initial_cost).unsqueeze(-1)
+    reward_signal = torch.zeros_like(actual_improvement).view(-1, 1)
+    if config["REWARD"] == "null":
+        pass
 
-    if config["REWARD_LAST"] and last_step:
-        reward_signal += ((initial_cost - best_cost) / initial_cost).unsqueeze(-1)
-
-        # Apply negative reward for invalid actions
-        if config["NEG_REWARD"] != 0:
-            reward_signal = (
-                reward_signal * is_valid + (1 - is_valid) * -config["NEG_REWARD"]
-            )
+    elif config["REWARD"] == "immediate":
+        reward_signal = (actual_improvement / initial_cost).view(-1, 1)
 
     elif config["REWARD"] == "min_cost":
-        reward_signal = -best_cost.view(-1, 1)
+        reward_signal = scale_positive_negative(
+            ((initial_cost + best_cost) / initial_cost).view(-1, 1)
+        )
     elif config["REWARD"] == "primal":
         reward_signal = -cumulative_cost.view(-1, 1)
+
+    if config["REWARD_LAST"] and last_step:
+        reward_signal += config["REWARD_LAST_SCALE"] * scale_positive_negative(
+            ((initial_cost - best_cost) / initial_cost).view(-1, 1)
+        )
 
     return reward_signal
 
@@ -492,6 +520,7 @@ def sa_train(
             ) = update_best_solution(
                 opt_state["current_cost"],
                 opt_state["current_solution"],
+                opt_state["initial_cost"],
                 opt_state["best_cost"],
                 opt_state["best_solution"],
                 step,

@@ -477,6 +477,9 @@ def main(config: Dict[str, Any]) -> None:
     training_problem.manual_seed(config["SEED"])
     training_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
 
+    if config["REWARD_LAST"]:
+        config["REWARD_LAST_SCALE"] = 0.0
+
     # Initialize test problem environment
     test_problem, initial_test_solutions = initialize_test_problem(config, device)
 
@@ -567,6 +570,10 @@ def main(config: Dict[str, Any]) -> None:
                         training_problem.nb_clusters_max = random.randint(
                             2, config["NB_CLUSTERS_MAX"]
                         )
+                if config["REWARD_LAST"]:
+                    config["REWARD_LAST_SCALE"] = min(
+                        config["REWARD_LAST_SCALE"] + config["REWARD_LAST_ADD"], 100
+                    )
 
             # Change initialization method periodically if enabled
             if config["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:

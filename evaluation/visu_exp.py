@@ -225,7 +225,11 @@ def main():
     result_baseline_2_opt = cvrp_2opt_vectorized(
         result_baseline["best_x"], coordinates, max_iterations=10000
     )
-
+    costs_baseline = [c.item() for c in result_baseline["costs"]]
+    invalid_moves_baseline = (
+        CFG["OUTER_STEPS"] - result_baseline["is_valid"].sum().item()
+    )
+    del result_baseline
     # Calculate and print execution time
     execution_time_baseline = time.time() - start_time
     print(f"Execution time baseline: {execution_time_baseline:.2f} seconds")
@@ -260,8 +264,6 @@ def main():
         print("OR-Tools could not find a solution.")
         or_tools_cost = torch.tensor([float("inf")])
         or_tools_sol = None
-    # Retrieve cost, temperature, and acceptance evolution
-    costs_baseline = [c.item() for c in result_baseline["costs"]]
 
     # Compute cumulative acceptance (running mean)
     acceptance_cum = []
@@ -287,9 +289,6 @@ def main():
     min_idx_baseline = costs_baseline.index(min_cost_baseline)
     print(f"Minimal cost baseline: {min_cost_baseline:.4f} at step {min_idx_baseline}")
     print(f"Minimal cost baseline after 2-opt: {min_cost_2opt_baseline:.4f}")
-    invalid_moves_baseline = (
-        CFG["OUTER_STEPS"] - result_baseline["is_valid"].sum().item()
-    )
     print(
         f"Number of invalid moves (refused) for baseline: "
         f"{invalid_moves_baseline} / {CFG['OUTER_STEPS']}"
