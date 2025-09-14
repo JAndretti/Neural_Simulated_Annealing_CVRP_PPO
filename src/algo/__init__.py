@@ -12,6 +12,8 @@ from .heur_init import (
 )
 from .or_tools import or_tools, compute_euclidean_distance_matrix, test_or_tools
 
+from .generate_uchoa import P_generate_instances, stack_res
+
 __all__ = [
     "or_tools",
     "test_or_tools",
@@ -26,4 +28,6 @@ __all__ = [
     "cheapest_insertion",
     "path_cheapest_arc",
     "farthest_insertion",
+    "P_generate_instances",
+    "stack_res",
 ]

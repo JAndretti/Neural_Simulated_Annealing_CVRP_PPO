@@ -332,6 +332,9 @@ def calculate_reward(
     elif config["REWARD"] == "primal":
         reward_signal = -cumulative_cost.view(-1, 1)
 
+    if config["REWARD_VALID"]:
+        reward_signal[~is_valid.view(-1, 1)] = -1
+
     if config["REWARD_LAST"] and last_step:
         reward_signal += config["REWARD_LAST_SCALE"] * scale_positive_negative(
             ((initial_cost - best_cost) / initial_cost).view(-1, 1)
@@ -550,6 +553,8 @@ def sa_train(
                 opt_state["initial_cost"],
                 step + 1 == config["OUTER_STEPS"],
             )
+            # Scale the reward signal based on the current step to outer steps ratio
+            # tracking["reward_signal"] *= max(0.3, step / config["OUTER_STEPS"])
 
             # Store experience in replay buffer
             if replay_buffer is not None:

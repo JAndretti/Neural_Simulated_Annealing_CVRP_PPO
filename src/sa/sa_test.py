@@ -228,6 +228,14 @@ def sa_test(
 
             best_cost = torch.minimum(current_cost, best_cost)
 
+            # Update best solution at each step
+            if torch.any(proposed_cost < best_cost):
+                best_solution = torch.where(
+                    extend_to(proposed_cost < best_cost, solution_components),
+                    proposed_solution,
+                    best_solution,
+                )
+
             # Temperature update at end of inner steps
             if inner_step == config["INNER_STEPS"] - 1:
                 # Calculate advancement ratio (decreases from 1 to 0)
@@ -253,5 +261,6 @@ def sa_test(
 
     dict_solution = {
         "min_cost": best_cost,
+        "best_x": best_solution,
     }
     return dict_solution

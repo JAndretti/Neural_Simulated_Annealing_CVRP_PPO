@@ -30,6 +30,17 @@ from algo import (
     farthest_insertion,
 )
 
+init_methods = {
+    "random": random_init_batch,
+    "sweep": generate_sweep_solution,
+    "isolate": generate_isolate_solution,
+    "Clark_and_Wright": generate_Clark_and_Wright,
+    "nearest_neighbor": generate_nearest_neighbor,
+    "cheapest_insertion": cheapest_insertion,
+    "path_cheapest_arc": path_cheapest_arc,
+    "farthest_insertion": farthest_insertion,
+}
+
 
 class Problem(ABC):
     """
@@ -519,43 +530,35 @@ class CVRP(Problem):
 
     def generate_init_solution(self, param: str = None) -> torch.Tensor:
         """
-        Generate initial solutions using specified algorithm.
-
-        Args:
-            param: Optional algorithm parameter to override default
-
-        Returns:
-            Initial solution tensor
-
-        Raises:
-            ValueError: If unsupported initialization method specified
+        Generate initial solutions using specified algorithm or multiple methods
+        if MULTI_INIT is enabled.
         """
         if param is not None:
             self.params["INIT"] = param
 
-        if self.params["INIT"] == "random":
-            sol = random_init_batch(self).to(self.device)
-        elif self.params["INIT"] == "sweep":
-            sol = generate_sweep_solution(self).to(self.device)
-        elif self.params["INIT"] == "isolate":
-            sol = generate_isolate_solution(self).to(self.device)
-        elif self.params["INIT"] == "Clark_and_Wright":
-            sol = generate_Clark_and_Wright(self).to(self.device)
-        elif self.params["INIT"] == "nearest_neighbor":
-            sol = generate_nearest_neighbor(self).to(self.device)
-        elif self.params["INIT"] == "cheapest_insertion":
-            sol = cheapest_insertion(self).to(self.device)
-        elif self.params["INIT"] == "path_cheapest_arc":
-            sol = path_cheapest_arc(self).to(self.device)
-        elif self.params["INIT"] == "farthest_insertion":
-            sol = farthest_insertion(self).to(self.device)
+        if self.params.get("MULTI_INIT", False):
+            split_size = self.n_problems // len(self.params["INIT_LIST"])
+            solutions = []
+            for i, method in enumerate(self.params["INIT_LIST"]):
+                sol = init_methods[method](self).to(self.device)
+                if i == len(self.params["INIT_LIST"]) - 1:
+                    solutions.append(sol[i * split_size :, :, :])
+                else:
+                    solutions.append(sol[i * split_size : (i + 1) * split_size, :, :])
+            max_size = max(sol.shape[1] for sol in solutions)
+            solutions_padded = [
+                F.pad(sol, (0, 0, 0, max_size - sol.shape[1])) for sol in solutions
+            ]
+            sol = torch.cat(solutions_padded, dim=0)
         else:
-            raise ValueError(
-                f"Unsupported initialization method: {self.params['INIT']}"
-            )
+            method = self.params["INIT"]
+            if method not in init_methods:
+                raise ValueError(f"Unsupported initialization method: {method}")
+
+            sol = init_methods[method](self).to(self.device)
 
         valid = self.is_feasible(sol).all()
-        if valid is False:
+        if not valid:
             logger.warning(
                 "Generated initial solution is not feasible. "
                 "Consider using a different initialization method."

@@ -2,18 +2,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 OR_TOOLS_OPT_COST_PATH = "res/Vrp-Set-XML100_res.csv"
-MODEL_RES_PATH = "res/models_res_on_bdd.csv"
+MODEL_RES_PATH = "res/EVAL/models_res_on_bdd.csv"
 
 DISPLAY_NAMES = None
 # Names of the methods to be displayed in the boxplot
 # if you want special names
-# DISPLAY_NAMES = [
-#     "Solution optimale",
-#     "OR-Tools 60sec",
-#     "Échant. par rejet",
-#     "Reconstruction heur.",
-#     "SA baseline",
-# ]
+DISPLAY_NAMES = [
+    "Solution optimale",
+    "OR-Tools 1sec",
+    "OR-Tools 30sec",
+    "Échant. par rejet",
+    "Baseline Échant. par rejet",
+    "Reconstruction heur.",
+    "Baseline Reconstruction heur.",
+]
 
 COLORS = [
     "#1f77b4",

@@ -3,6 +3,8 @@ import pandas as pd
 import torch
 import numpy as np
 import tqdm
+from glob import glob
+
 from loguru import logger  # Enhanced logging capabilities
 from func import init_problem_parameters, set_seed, load_model, init_pb
 
@@ -30,40 +32,34 @@ logger.add(
 
 # TO FILL
 ###########################################################################
-MODEL = "20250828_125518_0ci12f1i"
+MODEL = "20250912_140900_bmgtl0xy"
 cfg = {
     "PROBLEM_DIM": 100,
-    "N_PROBLEMS": 10000,
-    "OUTER_STEPS": 10_000,
+    "N_PROBLEMS": 10_000,
+    "OUTER_STEPS": 100_000,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    "INIT": "Clark_and_Wright",
+    "INIT": "nearest_neighbor",  # "random", "isolate", "cw"
     "SEED": 0,
     "LOAD_PB": True,
+    "MULTI_INIT": False,
 }
-BASELINE = False  # If True, eval on baseline method, else on the model
+cfg["MAX_LOAD"] = 50 if cfg["PROBLEM_DIM"] == 100 else 40
+BASELINE = False  # IF True, eval on baseline method, else on the model
 ###########################################################################
 
 if BASELINE:
     logger.info("Running in baseline mode.")
 
-PATH = "wandb/Neural_Simulated_Annealing/"
-
-# Find the path of the folder dynamically
-MODEL_PATH = next(
-    (
-        os.path.join(PATH, folder, "models", MODEL)
-        for folder in os.listdir(PATH)
-        if MODEL in os.listdir(os.path.join(PATH, folder, "models"))
-    ),
-    None,
-)
+MODEL_PATH = glob(
+    os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL)
+)[0]
 
 if MODEL_PATH is None:
-    raise FileNotFoundError(f"Model folder containing {MODEL} not found in {PATH}")
+    raise FileNotFoundError(f"Model folder containing {MODEL}")
 FOLDER = MODEL_PATH.split("/")[-3] + "/" + MODEL_PATH.split("/")[-2] + "/"
 
 
@@ -181,6 +177,11 @@ if __name__ == "__main__":
     problem, init_x, initial_cost = init_pb(
         CFG, node_coords_tensor_n, demands_tensor, capacity_tensor
     )
+    # Calculate distances using the solutions and non-normalized node coordinates
+    distances = []
+    for sol, dist_mat in zip(init_x, matrixes):
+        distances.append(calculate_dist_route(sol.squeeze().cpu().numpy(), dist_mat))
+    logger.info(f"Initial solution distances (mean): {np.mean(distances):.4f}")
     # Initialize models
     logger.info("Initializing models...")
     if CFG["PAIRS"]:
@@ -226,11 +227,11 @@ if __name__ == "__main__":
     distances = []
     for sol, dist_mat in zip(solutions, matrixes):
         distances.append(calculate_dist_route(sol.squeeze().numpy(), dist_mat))
-
+    logger.info(f"Final solution distances (mean): {np.mean(distances):.4f}")
     tmp_df = pd.DataFrame(
         {
             "name": names,
-            FOLDER + MODEL if not BASELINE else "Baseline": distances,
+            FOLDER + MODEL if not BASELINE else f"Baseline {MODEL}": distances,
         }
     )
 

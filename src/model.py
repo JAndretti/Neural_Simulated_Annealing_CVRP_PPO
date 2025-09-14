@@ -583,3 +583,7 @@ class CVRPCritic(nn.Module):
         state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
         q_values = self.q_func(state).view(n_problems, problem_dim)
         return q_values.mean(dim=-1)
+
+    def reset_weights(self):
+        """Reset the weights of the critic network."""
+        self.q_func.apply(self.init_weights)

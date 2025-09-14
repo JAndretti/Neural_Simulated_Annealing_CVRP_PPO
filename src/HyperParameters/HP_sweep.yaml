@@ -2,7 +2,14 @@
 LOG: 
 - True 
 
-NUM_H_LAYERS : 
-- 0
+TEST_INIT:
+- "sweep"
+- "random"
+
+EMBEDDING_DIM: 
+- 32 
+- 64
+
+NUM_H_LAYERS: 
 - 1
 - 2

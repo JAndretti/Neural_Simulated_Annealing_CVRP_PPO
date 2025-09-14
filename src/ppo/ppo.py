@@ -14,11 +14,23 @@ logger.remove()
 logger.add(
     lambda msg: print(msg, end=""),
     format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<blue>{file}:{line}</blue> | "
+        "<red>WARNING</red> | "
+        "<red>{message}</red>"
+    ),
+    colorize=True,
+    level="WARNING",
+)
+logger.add(
+    lambda msg: print(msg, end=""),
+    format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # Timestamp in green
         "<blue>{file}:{line}</blue> | "  # File and line in blue
         "<yellow>{message}</yellow>"  # Message in yellow
     ),
     colorize=True,
+    level="INFO",
 )
 
 DEVICE = (
@@ -75,7 +87,7 @@ def run_ppo_training_epochs(
     eps_clip = cfg["EPS_CLIP"]
     ent_coef = cfg["ENT_COEF"]
     gp_lam = cfg["GP_LAMBDA"]
-    target_KL = 0.02  # Use .get for flexibility
+    target_KL = cfg["TARGET_KL"]  # Use .get for flexibility
 
     # === Preparation for PPO Epochs ===
     total_samples = state.size(0)

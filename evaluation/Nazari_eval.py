@@ -39,8 +39,8 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "TRAIN2"
-N_PROBLEMS = 10000  # Number of random problems to generate for each configuration
+FOLDER = "Test"
+N_PROBLEMS = 1000  # Number of random problems to generate for each configuration
 # VRP configurations: (name, customers, capacity)
 VRP_CONFIGS = [
     ("VRP10", 10, 20),
@@ -93,6 +93,8 @@ cfg = {
     ),
     "SEED": 0,
     "LOAD_PB": True,
+    "INIT": "random",
+    "INIT_LIST": ["random"],
 }
 
 generator = torch.Generator(device=cfg["DEVICE"])

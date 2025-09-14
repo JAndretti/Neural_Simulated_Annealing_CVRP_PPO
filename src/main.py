@@ -32,6 +32,7 @@ from model import CVRPActor, CVRPActorPairs, CVRPCritic
 from ppo import ppo, ReplayBuffer
 from problem import CVRP
 from sa import sa_train
+from algo import P_generate_instances, stack_res
 
 # --------------------------------
 # Profiling tools (optional)
@@ -123,9 +124,9 @@ def log_training_and_test_metrics(
             "Min_cost": torch.mean(test_results["min_cost"]),
             "Gain": torch.mean(test_results["init_cost"] - test_results["min_cost"]),
             "Acceptance_rate": torch.mean(test_results["n_acc"])
-            / config["OUTER_STEPS"],
+            / config["TEST_OUTER_STEPS"],
             "Step_best_cost": torch.mean(test_results["best_step"])
-            / config["OUTER_STEPS"],
+            / config["TEST_OUTER_STEPS"],
             "Valid_percentage": torch.mean(test_results["is_valid"]),
             "Final_capacity_left": torch.mean(test_results["capacity_left"]),
         }
@@ -336,6 +337,33 @@ def setup_reproducibility(seed: int) -> None:
     logger.info(f"Random seeds set to: {seed}")
 
 
+def initialize_training_problem(
+    problem: CVRP, device: str, config: Dict[str, Any]
+) -> CVRP:
+    if config["DATA"] == "uchoa":
+        # Load test problem parameters
+        test_dim = config["PROBLEM_DIM"]
+        n_test_problems = config["N_PROBLEMS"]
+        base_seed = random.randint(0, 1000000)
+        coords_list, demands_list, capacity_list, _ = P_generate_instances(
+            n_test_problems, base_seed, test_dim
+        )
+        # Stack the results into tensors
+        coords, demands, capacity = stack_res(coords_list, demands_list, capacity_list)
+        # Generate and set problem parameters
+        test_params = problem.generate_params(
+            "train", True, coords, demands.to(torch.int64)
+        )
+        problem.capacity = capacity.to(device)
+        problem.set_params(test_params)
+    elif config["DATA"] == "random":
+        # Generate new training problem instances
+        training_params = problem.generate_params()
+        training_params = {k: v.to(device) for k, v in training_params.items()}
+        problem.set_params(training_params)
+    return problem
+
+
 def initialize_test_problem(
     config: Dict[str, Any], device: str
 ) -> Tuple[CVRP, torch.Tensor]:
@@ -352,20 +380,36 @@ def initialize_test_problem(
     # Load test problem parameters
     test_dim = config["TEST_DIMENSION"]
     n_test_problems = config["TEST_NB_PROBLEMS"]
-    problem_path = f"generated_problem/gen{test_dim}.pt"
 
-    try:
-        test_data = torch.load(problem_path, map_location="cpu")
-        logger.info(f"Loaded test data from: {problem_path}")
-    except FileNotFoundError:
-        logger.error(f"Test data file not found: {problem_path}")
-        raise
+    if config["NAZARI"]:
+        # Generate coordinates (depot + customers)
+        coordinates = torch.rand(n_test_problems, test_dim + 1, 2, device=device)
 
-    # Randomly select test problem indices
-    indices = torch.randperm(n_test_problems, generator=torch.Generator())
-    coordinates = test_data["node_coords"][indices]
-    demands = test_data["demands"][indices]
-    capacities = test_data["capacity"][indices]
+        # Generate demands (depot has 0 demand, customers have demand 1-9)
+        demands = torch.randint(
+            1,
+            10,
+            (n_test_problems, test_dim + 1),
+            device=device,
+        )
+        demands[:, 0] = 0
+        # Set capacity for all problems
+        capacity = 50 if test_dim == 100 else 40
+        capacities = torch.full((n_test_problems, 1), capacity, device=device)
+    else:
+        problem_path = f"generated_problem/gen{test_dim}.pt"
+        try:
+            test_data = torch.load(problem_path, map_location="cpu")
+            logger.info(f"Loaded test data from: {problem_path}")
+        except FileNotFoundError:
+            logger.error(f"Test data file not found: {problem_path}")
+            raise
+
+        # Randomly select test problem indices
+        indices = torch.randperm(n_test_problems, generator=torch.Generator())
+        coordinates = test_data["node_coords"][indices]
+        demands = test_data["demands"][indices]
+        capacities = test_data["capacity"][indices]
 
     if (coordinates.shape[0] * coordinates.shape[1] > 1000 * 161) and config["PAIRS"]:
         logger.warning(
@@ -387,8 +431,11 @@ def initialize_test_problem(
     test_problem.set_params(test_params)
 
     # Generate initial solutions
-    init_method = "isolate" if config["CHANGE_INIT_METHOD"] else config["INIT"]
+    init_method = config["TEST_INIT"]
+    tmp = config["MULTI_INIT"]
+    config["MULTI_INIT"] = False  # Disable multi-init for test problem
     initial_test_solutions = test_problem.generate_init_solution(init_method)
+    config["MULTI_INIT"] = tmp  # Restore multi-init setting
 
     # Set heuristic method
     test_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
@@ -491,10 +538,10 @@ def main(config: Dict[str, Any]) -> None:
 
     # Initialize optimizers
     actor_optimizer = torch.optim.Adam(
-        actor.parameters(), lr=config["LR"], weight_decay=config["WEIGHT_DECAY"]
+        actor.parameters(), lr=config["LR_ACTOR"], weight_decay=config["WEIGHT_DECAY"]
     )
     critic_optimizer = torch.optim.Adam(
-        critic.parameters(), lr=config["LR"], weight_decay=config["WEIGHT_DECAY"]
+        critic.parameters(), lr=config["LR_CRITIC"], weight_decay=config["WEIGHT_DECAY"]
     )
 
     logger.info("Training initialization completed")
@@ -520,12 +567,12 @@ def main(config: Dict[str, Any]) -> None:
         torch.cuda.empty_cache()
 
     # Main training loop
-    with tqdm(range(config["N_EPOCHS"]), unit="epoch", colour="blue") as progress_bar:
+    with tqdm(range(config["N_EPOCHS"]), unit="ep och", colour="blue") as progress_bar:
         for epoch in progress_bar:
             # Generate new training problem instances
-            training_params = training_problem.generate_params()
-            training_params = {k: v.to(device) for k, v in training_params.items()}
-            training_problem.set_params(training_params)
+            training_problem = initialize_training_problem(
+                training_problem, device, config
+            )
 
             # Generate initial solutions for training
             initial_training_solutions = training_problem.generate_init_solution(
@@ -574,13 +621,6 @@ def main(config: Dict[str, Any]) -> None:
                     config["REWARD_LAST_SCALE"] = min(
                         config["REWARD_LAST_SCALE"] + config["REWARD_LAST_ADD"], 100
                     )
-
-            # Change initialization method periodically if enabled
-            if config["CHANGE_INIT_METHOD"] and epoch % 5 == 0 and epoch != 0:
-                init_index = (epoch // 5) % len(config["INIT_LIST"])
-                config["INIT"] = config["INIT_LIST"][init_index]
-                if config["VERBOSE"]:
-                    logger.info(f"Changed INIT method to {config['INIT']}")
 
             # Log metrics to WandB
             if config["LOG"]:

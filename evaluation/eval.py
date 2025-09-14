@@ -38,9 +38,9 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "features2"
+FOLDER = "MULTI"
 rapid = False  # Set to True for faster execution, False for full evaluation
-dim = 50  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
+dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
 
 if dim not in [50, 100, 500, 1000]:
@@ -79,8 +79,7 @@ else:
 cfg = {
     "PROBLEM_DIM": 50 if rapid else coords.shape[1] - 1,
     "N_PROBLEMS": 1000 if rapid else capacities.shape[0],
-    "OUTER_STEPS": 2000 if rapid else 10000,
-    "MAX_LOAD": 20,
+    "OUTER_STEPS": 1000 if rapid else 10000,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
@@ -88,9 +87,10 @@ cfg = {
     ),
     "SEED": 0,
     "LOAD_PB": False if rapid else True,
+    "INIT": "random",
+    "MULTI_INIT": False,
 }
-
-logger.info(f"Device set to {cfg['DEVICE']}")
+cfg["MAX_LOAD"] = 50 if cfg["PROBLEM_DIM"] == 100 else 40
 
 
 def initialize_results_df(columns: list):

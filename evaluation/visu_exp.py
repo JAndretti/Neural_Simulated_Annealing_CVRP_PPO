@@ -24,7 +24,7 @@ from algo import test_or_tools
 
 # --- Configurations ---
 
-MODEL_NAME = "20250827_172131_57xbb0z1"
+MODEL_NAME = "20250909_181653_ccv8e3tx"
 MODEL_DIR = glob(
     os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL_NAME)
 )[0]
@@ -37,9 +37,9 @@ cfg = {
     "OUTER_STEPS": 10000,
     "DEVICE": "cpu",
     "INIT": "isolate",
-    "SEED": 0,
+    "SEED": 1,
     "LOAD_PB": False,
-    "STOP_TEMP": 0.01,
+    "MULTI_INIT": False,
 }
 
 
@@ -216,6 +216,7 @@ def main():
 
     start_time = time.time()
     init_x = problem.generate_init_solution(CFG["INIT"])
+    CFG["OUTER_STEPS"] = int(1.4 * CFG["OUTER_STEPS"])
     result_baseline = sa_train(
         actor, problem, init_x, CFG, baseline=True, record_state=True
     )
