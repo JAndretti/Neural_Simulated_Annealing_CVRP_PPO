@@ -87,7 +87,7 @@ def run_ppo_training_epochs(
     eps_clip = cfg["EPS_CLIP"]
     ent_coef = cfg["ENT_COEF"]
     gp_lam = cfg["GP_LAMBDA"]
-    target_KL = cfg["TARGET_KL"]  # Use .get for flexibility
+    target_KL = cfg["TARGET_KL"]
 
     # === Preparation for PPO Epochs ===
     total_samples = state.size(0)

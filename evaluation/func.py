@@ -93,12 +93,9 @@ def init_pb(
         params=cfg,
     )
     problem.manual_seed(cfg["SEED"])
-    params = problem.generate_params("test", cfg["LOAD_PB"], coords, demands)
-    problem.set_params(params)
-    init_x = problem.generate_init_solution(cfg["INIT"])
+    problem.generate_params("test", cfg["LOAD_PB"], coords, demands)
+    init_x = problem.generate_init_state(cfg["INIT"])
     initial_cost = torch.mean(problem.cost(init_x))
-    problem.set_heuristic(cfg["HEURISTIC"], cfg["MIX1"], cfg["MIX2"])
-    logger.info(f"CVRP problem initialized. Initial cost: {initial_cost:.4f}")
     return problem, init_x, initial_cost
 
 

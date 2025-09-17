@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "MULTI"
+FOLDER = "HEUR"
 rapid = False  # Set to True for faster execution, False for full evaluation
 dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
@@ -89,6 +89,7 @@ cfg = {
     "LOAD_PB": False if rapid else True,
     "INIT": "random",
     "MULTI_INIT": False,
+    "UPDATE_METHOD": "free",
 }
 cfg["MAX_LOAD"] = 50 if cfg["PROBLEM_DIM"] == 100 else 40
 
@@ -125,14 +126,16 @@ def load_results_models():
 
 def perform_test(
     model_name: str,
+    problem: object,
+    init_x: torch.Tensor,
 ):
     """Main execution function."""
     logger.info(f"Processing model: {model_name}")
     # init HP
     HP = init_problem_parameters(model_name, cfg)
 
-    problem, _, _ = init_pb(HP, coords, demands, capacities)
-
+    problem.set_heuristic(HP["HEURISTIC"])
+    problem.params = HP
     # Initialize models
     if HP["PAIRS"]:
         actor = CVRPActorPairs(
@@ -157,7 +160,7 @@ def perform_test(
 
     # Run simulated annealing with time measurement
     start_time = time.time()
-    init_x = problem.generate_init_solution(HP["INIT"])
+
     test = sa_test(
         actor,
         problem,
@@ -171,17 +174,32 @@ def perform_test(
     execution_time = time.time() - start_time
     init_cost = torch.mean(problem.cost(init_x))
     final_cost = torch.mean(test["min_cost"])
+
+    step = HP["OUTER_STEPS"]
+    HP["OUTER_STEPS"] *= 20
+    step_baseline = HP["OUTER_STEPS"]
+    start_time = time.time()
     test_baseline = sa_baseline(
         problem,
         init_x,
         HP,
         desc_tqdm="SA Baseline",
     )
+    execution_time_baseline = time.time() - start_time
+    HP["OUTER_STEPS"] = step
     final_cost_baseline = torch.mean(test_baseline["min_cost"])
     # Clear CUDA cache if using GPU
     if cfg["DEVICE"] == "cuda":
         torch.cuda.empty_cache()
-    return init_cost, final_cost, final_cost_baseline, execution_time
+    return (
+        init_cost,
+        final_cost,
+        final_cost_baseline,
+        execution_time,
+        execution_time_baseline,
+        step,
+        step_baseline,
+    )
 
 
 def extract_differing_keys(model_names):
@@ -226,14 +244,28 @@ if __name__ == "__main__":
         "final_cost",
         "final_cost_baseline",
         "execution_time",
+        "execution_time_baseline",
+        "NSA_steps",
+        "SA_steps",
     ] + list(differing_keys)
     new_df, RESULTS_FILE = initialize_results_df(columns)
     all_models_results_df = load_results_models()
+    problem, _, _ = init_pb(cfg, coords, demands, capacities)
+    init_x = problem.generate_init_state(cfg["INIT"])
+    init_cost = torch.mean(problem.cost(init_x))
+    logger.info(f"CVRP problem initialized. Initial cost: {init_cost:.4f}")
 
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
-        init_cost, final_cost, final_cost_baseline, execution_time = perform_test(
-            model_name
-        )
+
+        (
+            init_cost,
+            final_cost,
+            final_cost_baseline,
+            execution_time,
+            execution_time_baseline,
+            step,
+            step_baseline,
+        ) = perform_test(model_name, problem, init_x)
         # Extract HP values for the current model
         hp_values = add_hp_to_results(model_name, differing_keys)
         # Add results to DataFrame
@@ -247,6 +279,9 @@ if __name__ == "__main__":
                         "final_cost": [final_cost.item()],
                         "final_cost_baseline": [final_cost_baseline.item()],
                         "execution_time": [execution_time],
+                        "execution_time_baseline": [execution_time_baseline],
+                        "NSA_steps": [step],
+                        "SA_steps": [step_baseline],
                         **hp_values,
                     }
                 ),
@@ -266,27 +301,6 @@ if __name__ == "__main__":
             ],
             ignore_index=True,
         )
-    # # Load OR-Tools solution mean distance and add to DataFrame
-    # if os.path.exists(BDD_OR_TOOLS_PATH):
-    #     or_tools_data = torch.load(BDD_OR_TOOLS_PATH, map_location="cpu")
-    #     mean_or_distances = or_tools_data.get("mean_or_distances", float("nan"))
-    # else:
-    #     mean_or_distances = float("nan")
-
-    # # Prepare a row for OR-Tools
-    # or_tools_row = {
-    #     "model": "or_tools",
-    #     "initial_cost": float("nan"),
-    #     "final_cost": mean_or_distances.item(),
-    #     "execution_time": 60,
-    # }
-    # for key in differing_keys:
-    #     or_tools_row[key] = float("nan")
-
-    # new_df = pd.concat(
-    #     [new_df, pd.DataFrame([or_tools_row])],
-    #     ignore_index=True,
-    # )
 
     # Remove duplicate rows based on the 'model' column
     new_df = new_df.drop_duplicates(subset=["model"], keep="first")

@@ -21,10 +21,11 @@ from problem import CVRP
 from sa import sa_train
 from model import CVRPActorPairs, CVRPActor
 from algo import test_or_tools
+from utils import plot_vehicle_routes, prepare_plot, is_feasible
 
 # --- Configurations ---
 
-MODEL_NAME = "20250909_181653_ccv8e3tx"
+MODEL_NAME = "20250917_141217_ilskb4ow"
 MODEL_DIR = glob(
     os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL_NAME)
 )[0]
@@ -34,9 +35,9 @@ cfg = {
     "PROBLEM_DIM": 100,
     "MAX_LOAD": 50,
     "N_PROBLEMS": 1,
-    "OUTER_STEPS": 10000,
+    "OUTER_STEPS": 1000,
     "DEVICE": "cpu",
-    "INIT": "isolate",
+    "INIT": "sweep",
     "SEED": 1,
     "LOAD_PB": False,
     "MULTI_INIT": False,
@@ -161,6 +162,7 @@ def main():
     )
     problem.manual_seed(SEED)
     problem, init_x, initial_cost = init_pb(CFG)
+    problem.set_heuristic(CFG["HEURISTIC"])
 
     # Initialize actor
     if CFG["PAIRS"]:
@@ -189,7 +191,7 @@ def main():
     print(("SA started"))
     # Measure execution time
     start_time = time.time()
-    init_x = problem.generate_init_solution(CFG["INIT"])
+    init_x = problem.generate_init_state(CFG["INIT"])
     # Run experiment with record_state=True
     result = sa_train(actor, problem, init_x, CFG, record_state=True, baseline=False)
 
@@ -212,11 +214,14 @@ def main():
     execution_time = time.time() - start_time
     print(f"Execution time model: {execution_time:.2f} seconds")
     min_cost_2opt = problem.cost(result_2opt).item()
-    print(f"Solution found is feasible: {problem.is_feasible(result_2opt).item()}")
+    valid = is_feasible(
+        result_2opt, problem.get_demands(result_2opt), problem.capacity
+    ).item()
+    print((f"Solution found is feasible: " f"{valid}"))
 
     start_time = time.time()
-    init_x = problem.generate_init_solution(CFG["INIT"])
-    CFG["OUTER_STEPS"] = int(1.4 * CFG["OUTER_STEPS"])
+    init_x = problem.generate_init_state(CFG["INIT"])
+    CFG["OUTER_STEPS"] = int(10 * CFG["OUTER_STEPS"])
     result_baseline = sa_train(
         actor, problem, init_x, CFG, baseline=True, record_state=True
     )
@@ -235,10 +240,12 @@ def main():
     execution_time_baseline = time.time() - start_time
     print(f"Execution time baseline: {execution_time_baseline:.2f} seconds")
     min_cost_2opt_baseline = problem.cost(result_baseline_2_opt).item()
-    print(
-        f"Solution found is feasible: "
-        f"{problem.is_feasible(result_baseline_2_opt).item()}"
-    )
+    valid = is_feasible(
+        result_baseline_2_opt,
+        problem.get_demands(result_baseline_2_opt),
+        problem.capacity,
+    ).item()
+    print(f"Solution found is feasible: " f"{valid}")
     # Configure OR-Tools parameters
     or_tools_cfg = {
         "OR_TOOLS_TIME": int(
@@ -460,48 +467,52 @@ def main():
     else:
         print("No OR-Tools solution found.")
     # Plot the best solution (routes)
-    plt0 = plot_cvrp_solution(
+    plot_cvrp_solution(
         problem.state_encoding,
         None,
         title="CVRP Problem (No Solution)",
         show_routes=False,  # Ensure no routes are displayed, only points
     )
-
-    plt1 = plot_cvrp_solution(
-        problem.state_encoding,
-        result_2opt,
-        title=f"Best CVRP Solution, cost: {min_cost_2opt:.4f}",
+    fig, ax1 = plt.subplots(figsize=(10, 10))
+    data, sol = prepare_plot(problem, result_2opt)
+    plot_vehicle_routes(
+        data,
+        sol,
+        ax1=ax1,
+        capacity=CFG["MAX_LOAD"],
+        title="Best CVRP Solution with NSA",
     )
-    plt2 = plot_cvrp_solution(
-        problem.state_encoding,
-        init_x,
-        title=f"Initial CVRP Solution, cost: {problem.cost(init_x).item():.4f}",
+    fig, ax1 = plt.subplots(figsize=(10, 10))
+    data, init = prepare_plot(problem, init_x)
+    plot_vehicle_routes(
+        data,
+        init,
+        ax1=ax1,
+        markersize=5,
+        capacity=CFG["MAX_LOAD"],
+        title="Initial CVRP Solution",
     )  # Plot initial solution
+
     if or_tools_sol is not None:
-        plt3 = plot_cvrp_solution(
-            problem.coords,
-            or_tools_solution,
-            title=f"CVRP OR-Tools Solution, cost: {or_tools_cost.item():.4f}",
+        fig, ax1 = plt.subplots(figsize=(10, 10))
+        data, sol = prepare_plot(problem, or_tools_solution)
+        plot_vehicle_routes(
+            data,
+            sol,
+            ax1=ax1,
+            capacity=CFG["MAX_LOAD"],
+            title="Or-Tools CVRP Solution",
         )
-    plt4 = plot_cvrp_solution(
-        problem.state_encoding,
-        result_baseline_2_opt,
-        title=f"Baseline CVRP Solution, cost: {min_cost_2opt_baseline:.4f}",
-    )  # Plot baseline solution
-    plt.figure(plt0.number)
-    plt.show()
 
-    # Display both solution plots
-    plt.figure(plt1.number)
-    plt.show()
-
-    plt.figure(plt2.number)
-    plt.show()
-    if or_tools_sol is not None:
-        # Display OR-Tools solution plot
-        plt.figure(plt3.number)
-        plt.show()
-    plt.figure(plt4.number)
+    fig, ax1 = plt.subplots(figsize=(10, 10))
+    data, sol = prepare_plot(problem, result_baseline_2_opt)
+    plot_vehicle_routes(
+        data,
+        sol,
+        ax1=ax1,
+        capacity=CFG["MAX_LOAD"],
+        title="Baseline CVRP Solution",
+    )
     plt.show()
     plt.close("all")  # Close all plots to free memory
 

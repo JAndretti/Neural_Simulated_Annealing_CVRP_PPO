@@ -2,7 +2,7 @@ from typing import Dict, Tuple
 import torch
 from model import SAModel
 from problem import Problem
-from utils import extend_to
+from utils import capacity_utilization, extend_to
 from .scheduler import Scheduler
 from tqdm import tqdm
 
@@ -98,7 +98,9 @@ def initialize_optimization_state(
     """Initialize all optimization tracking variables."""
     best_solution = current_solution = initial_solution
     best_cost = current_cost = problem.cost(best_solution)
-    capacity_left = problem.capacity_utilization(best_solution)
+    capacity_left = capacity_utilization(
+        best_solution, problem.get_demands(best_solution), problem.capacity
+    )
     initial_cost = best_cost.clone()
     cumulative_cost = best_cost.clone() / initial_cost
     best_cost_step = torch.zeros_like(best_cost, dtype=torch.long)
@@ -578,7 +580,11 @@ def sa_train(
         final_transition = replay_buffer.pop()
         replay_buffer.push(*(list(final_transition[:-1]) + [0.0]))
 
-    final_capacity_left = problem.capacity_utilization(opt_state["best_solution"])
+    final_capacity_left = capacity_utilization(
+        opt_state["best_solution"],
+        problem.get_demands(opt_state["best_solution"]),
+        problem.capacity,
+    )
 
     # Build results dictionary
     results = {
@@ -602,7 +608,7 @@ def sa_train(
     }
 
     # Add heuristic-specific results
-    if config["HEURISTIC"] == "mix":
+    if len(config["HEURISTIC"]) > 1:
         results["ratio"] = tracking["ratio"] / config["OUTER_STEPS"]
         results["heuristic"] = tracking["heuristic_choice"]
 

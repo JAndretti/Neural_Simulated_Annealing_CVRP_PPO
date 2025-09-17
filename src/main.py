@@ -74,7 +74,6 @@ logger.add(
 # --------------------------------
 config = _HP("src/HyperParameters/HP.yaml")
 config.update(get_script_arguments(config.keys()))
-
 # --------------------------------
 # Initialize experiment tracking
 # --------------------------------
@@ -132,9 +131,8 @@ def log_training_and_test_metrics(
         }
         logs.update(test_logs)
 
-        # Add heuristic-specific metrics
-        if config["HEURISTIC"] == "mix":
-            logs["ratio_heuristic"] = test_results["ratio"]
+    if len(config["HEURISTIC"]) > 1:
+        logs["ratio_heuristic"] = test_results["ratio"]
 
     WandbLogger.log(logs)
 
@@ -351,16 +349,11 @@ def initialize_training_problem(
         # Stack the results into tensors
         coords, demands, capacity = stack_res(coords_list, demands_list, capacity_list)
         # Generate and set problem parameters
-        test_params = problem.generate_params(
-            "train", True, coords, demands.to(torch.int64)
-        )
+        problem.generate_params("train", True, coords, demands.to(torch.int64))
         problem.capacity = capacity.to(device)
-        problem.set_params(test_params)
     elif config["DATA"] == "random":
         # Generate new training problem instances
-        training_params = problem.generate_params()
-        training_params = {k: v.to(device) for k, v in training_params.items()}
-        problem.set_params(training_params)
+        problem.generate_params()
     return problem
 
 
@@ -427,18 +420,17 @@ def initialize_test_problem(
     test_problem.manual_seed(0)
 
     # Generate and set problem parameters
-    test_params = test_problem.generate_params("test", True, coordinates, demands)
-    test_problem.set_params(test_params)
+    test_problem.generate_params("test", True, coordinates, demands)
 
     # Generate initial solutions
     init_method = config["TEST_INIT"]
     tmp = config["MULTI_INIT"]
     config["MULTI_INIT"] = False  # Disable multi-init for test problem
-    initial_test_solutions = test_problem.generate_init_solution(init_method)
+    initial_test_solutions = test_problem.generate_init_state(init_method)
     config["MULTI_INIT"] = tmp  # Restore multi-init setting
 
     # Set heuristic method
-    test_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
+    test_problem.set_heuristic(config["HEURISTIC"])
 
     # Log test problem statistics
     initial_cost = torch.mean(test_problem.cost(initial_test_solutions))
@@ -464,7 +456,7 @@ def initialize_models(
         Tuple of (actor_model, critic_model)
     """
     # Determine if mixed heuristic is used
-    use_mixed_heuristic = config["HEURISTIC"] == "mix"
+    use_mixed_heuristic = len(config["HEURISTIC"]) > 1
 
     # Initialize actor model (with or without pairs)
     if config["PAIRS"]:
@@ -522,7 +514,7 @@ def main(config: Dict[str, Any]) -> None:
         params=config,
     )
     training_problem.manual_seed(config["SEED"])
-    training_problem.set_heuristic(config["HEURISTIC"], config["MIX1"], config["MIX2"])
+    training_problem.set_heuristic(config["HEURISTIC"])
 
     if config["REWARD_LAST"]:
         config["REWARD_LAST_SCALE"] = 0.0
@@ -551,23 +543,23 @@ def main(config: Dict[str, Any]) -> None:
         actor, test_problem, initial_test_solutions, config
     )
     current_test_loss = torch.mean(initial_test_results["min_cost"])
-    logger.info(f"Initial test loss: {current_test_loss:.4f}")
+    logger.info(
+        f"Initial test completed with {config['TEST_INIT']}, "
+        f"with loss: {current_test_loss:.4f}"
+    )
 
     # Early stopping variables
     early_stopping_counter = 0
     best_loss_value = float("inf")
 
-    logger.info(
-        f"Starting training - INIT method: {config['INIT']}, "
-        f"CLUSTERING: {config['CLUSTERING']}"
-    )
+    logger.info("Starting training")
 
     # Clear GPU memory before training
     if training_problem.device == "cuda":
         torch.cuda.empty_cache()
 
     # Main training loop
-    with tqdm(range(config["N_EPOCHS"]), unit="ep och", colour="blue") as progress_bar:
+    with tqdm(range(config["N_EPOCHS"]), unit="epoch", colour="blue") as progress_bar:
         for epoch in progress_bar:
             # Generate new training problem instances
             training_problem = initialize_training_problem(
@@ -575,7 +567,7 @@ def main(config: Dict[str, Any]) -> None:
             )
 
             # Generate initial solutions for training
-            initial_training_solutions = training_problem.generate_init_solution(
+            initial_training_solutions = training_problem.generate_init_state(
                 config["INIT"]
             )
 
@@ -604,19 +596,6 @@ def main(config: Dict[str, Any]) -> None:
                 )
                 current_test_loss = torch.mean(test_results["min_cost"])
 
-                # Toggle clustering if alternating clustering is enabled
-                if config["ALT_CLUSTERING"]:
-                    training_problem.clustering = not training_problem.clustering
-                    if config["VERBOSE"]:
-                        logger.info(
-                            f"Clustering toggled to {training_problem.clustering}"
-                        )
-
-                    # Set random number of clusters if clustering is enabled
-                    if training_problem.clustering:
-                        training_problem.nb_clusters_max = random.randint(
-                            2, config["NB_CLUSTERS_MAX"]
-                        )
                 if config["REWARD_LAST"]:
                     config["REWARD_LAST_SCALE"] = min(
                         config["REWARD_LAST_SCALE"] + config["REWARD_LAST_ADD"], 100

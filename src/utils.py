@@ -63,7 +63,7 @@ def discrete_cmap(N, base_cmap=None):
     return base.from_list(cmap_name, color_list, N)
 
 
-def _prepare_plot(pb, init):
+def prepare_plot(pb, init):
     depot = pb.coords[:, 0, :].squeeze()
     loc = pb.coords[:, 1:, :].squeeze()
     demand = pb.demands[:, 1:].squeeze()
@@ -104,7 +104,7 @@ def plot_vehicle_routes(
     ax1.set_xlim(0, 1)
     ax1.set_ylim(0, 1)
 
-    ax1.legend(loc="upper center")
+    # ax1.legend(loc="upper center")
 
     cmap = discrete_cmap(len(routes) + 2, "nipy_spectral")
     dem_rects = []
@@ -165,7 +165,7 @@ def plot_vehicle_routes(
 
         qvs.append(qv)
     title = (
-        f"{title or ''} {len(routes)} routes, total distance {total_dist:.2f}".strip()
+        f"{title or ''} {len(routes)} routes, total distance {total_dist:.4f}".strip()
     )
 
     ax1.set_title(title)
@@ -185,34 +185,10 @@ def plot_vehicle_routes(
         ax1.add_collection(pc_dem)
 
 
-def plot_CVRP(ax, nodes, x_coords, y_coords, title="Solution"):
-    """Plot the CVRP solution."""
-    zero_indices = [i for i, v in enumerate(nodes) if v == 0]
-    colors = plt.get_cmap(None, len(zero_indices) - 1)
-    for i in range(len(zero_indices) - 1):
-        start = zero_indices[i]
-        end = zero_indices[i + 1]
-
-        segment_x = x_coords[start : end + 1]
-        segment_y = y_coords[start : end + 1]
-        segment_values = nodes[start : end + 1]
-
-        ax.plot(
-            segment_x,
-            segment_y,
-            color=colors(i),
-            marker="o",
-            label=f"Segment {i + 1}",
-        )
-        for x, y, val in zip(segment_x, segment_y, segment_values):
-            ax.text(x, y, str(int(val)), fontsize=9, ha="center", va="bottom")
-    ax.set_title(f"{title} : {list(map(int, nodes))}")
-
-
 def calculate_client_angles(coords: torch.Tensor) -> torch.Tensor:
     """
-    coords: [B, N, 2], coords[:,0] = dépôt
-    renvoie [B, N, 1] avec angle normalisé [0,1] (dépôt=0)
+    coords: [B, N, 2], coords[:,0] = depot
+    returns [B, N, 1] with normalized angle [0,1] (depot=0)
     """
     depot = coords[:, :1]
     clients = coords[:, 1:]
@@ -227,6 +203,119 @@ def calculate_client_angles(coords: torch.Tensor) -> torch.Tensor:
 
 def calculate_distance_matrix(coords: torch.Tensor) -> torch.Tensor:
     """
-    coords: [B, N, 2] → distances Euclidiennes [B, N, N]
+    coords: [B, N, 2] → Euclidean distances [B, N, N]
     """
     return torch.cdist(coords, coords, p=2)
+
+
+def is_feasible(
+    solution: torch.Tensor, demands: torch.Tensor, capacity: torch.Tensor
+) -> torch.Tensor:
+    """
+    Check if the solution respects capacity constraints for all routes.
+
+    Args:
+        solution: Tensor [batch, route_length, 1] representing routes
+        demands: Tensor [batch, route_length] with demands for each client (0 for depot)
+        capacity: Tensor [batch] with vehicle capacities for each problem instance
+
+    Returns:
+        Tensor [batch] of boolean values indicating feasibility for each problem
+    """
+    batch_size = solution.size(0)
+    device = solution.device
+
+    mask = solution.squeeze(-1) != 0  # [batch, route_length]
+
+    # Identify route starts: True where a route starts (depot->client)
+    route_starts = torch.cat(
+        [
+            torch.ones(batch_size, 1, dtype=torch.bool, device=device),
+            (~mask[:, :-1]) & mask[:, 1:],
+        ],
+        dim=1,
+    )  # [batch, route_length]
+
+    # Assign a route id to each position
+    route_ids = torch.cumsum(route_starts, dim=1) - 1  # [batch, route_length]
+
+    # Set depot positions to -1 so they don't contribute to route sums
+    route_ids[~mask] = -1  # depot positions
+
+    # Compute route demand sums (scatter_add)
+    max_routes = route_ids.max().item() + 1 if route_ids.numel() > 0 else 0
+    max_routes = max(max_routes, solution.size(1))  # ensure enough space
+    route_demands = torch.zeros(
+        batch_size, max_routes, dtype=torch.int64, device=device
+    )
+
+    route_demands.scatter_add_(1, torch.clamp(route_ids, min=0), demands * mask)
+
+    # Check if any route demand exceeds capacity
+    feasible = (route_demands <= capacity).all(dim=1)
+    return feasible
+
+
+def capacity_utilization(
+    solution: torch.Tensor, demands: torch.Tensor, capacity: torch.Tensor
+) -> torch.Tensor:
+    """
+    Calculate capacity utilization score for each solution.
+
+    For each route in a solution, computes the ratio of total demand
+    to vehicle capacity, then averages these ratios across all routes.
+    Higher scores indicate better capacity utilization.
+
+    Args:
+        solution: Tensor [batch_size, route_length, 1] representing routes
+        demands: Tensor [batch_size, route_length] with demands for each client
+        (0 for depot)
+        capacity: Tensor [batch_size] with vehicle capacities for each problem instance
+
+    Returns:
+        Tensor [batch_size] with utilization score for each solution
+    """
+    batch_size = solution.size(0)
+    device = solution.device
+
+    mask = solution.squeeze(-1) != 0  # [batch, route_length] - True for clients
+
+    # Identify route starts: depot followed by client
+    route_starts = torch.cat(
+        [
+            torch.ones(batch_size, 1, dtype=torch.bool, device=device),
+            (~mask[:, :-1]) & mask[:, 1:],
+        ],
+        dim=1,
+    )  # [batch, route_length]
+
+    # Count number of routes per solution
+    routes_count = route_starts.sum(dim=1).float()  # [batch_size]
+
+    # Assign route IDs to each position
+    route_ids = torch.cumsum(route_starts, dim=1) - 1  # [batch, route_length]
+
+    # Mask depot positions so they don't contribute to demand sums
+    route_ids[~mask] = -1
+
+    # Compute total demand per route
+    max_routes = route_ids.max().item() + 1 if route_ids.numel() > 0 else 0
+    max_routes = max(max_routes, 1)  # ensure at least one route
+    route_demands = torch.zeros(
+        batch_size, max_routes, dtype=torch.float, device=device
+    )
+
+    route_demands.scatter_add_(
+        1, torch.clamp(route_ids, min=0), demands.float() * mask.float()
+    )
+
+    # Calculate utilization ratio for each route (demand / capacity)
+    route_utilization = route_demands / capacity
+
+    # Get sum of utilization across all routes
+    total_utilization = torch.sum(route_utilization, dim=1)
+
+    # Compute average utilization per route
+    avg_utilization = total_utilization / routes_count
+
+    return 1 - avg_utilization

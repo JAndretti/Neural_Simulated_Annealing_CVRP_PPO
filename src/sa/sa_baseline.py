@@ -77,7 +77,7 @@ def sa_baseline(
     current_temp = torch.tensor([1], device=device).repeat(best_cost.shape[0])
 
     for step in tqdm(
-        range(config["OUTER_STEPS"]),
+        range(int(config["OUTER_STEPS"])),
         desc=desc_tqdm,
         colour="green",
         unit="step",

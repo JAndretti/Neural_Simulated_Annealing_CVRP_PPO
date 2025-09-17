@@ -14,6 +14,8 @@ from .or_tools import or_tools, compute_euclidean_distance_matrix, test_or_tools
 
 from .generate_uchoa import P_generate_instances, stack_res
 
+from .local_heuristics import swap, two_opt, insertion
+
 __all__ = [
     "or_tools",
     "test_or_tools",
@@ -30,4 +32,7 @@ __all__ = [
     "farthest_insertion",
     "P_generate_instances",
     "stack_res",
+    "swap",
+    "two_opt",
+    "insertion",
 ]
