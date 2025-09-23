@@ -1,6 +1,6 @@
 # =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"  # Project name
-GROUP: "ARCH_NEW"              # Experimentation group
+GROUP: "N_ATTENTION"              # Experimentation group
 LOG: True                             # Enable or disable logging with WandB
 VERBOSE: False                          # Verbose output during training
 
@@ -9,25 +9,18 @@ DEVICE: "cuda"                          # Hardware used: cpu, cuda, or mps
 SEED: 42                               # Random seed for reproducibility
 
 # =============== CVRP Problem ===============
-PROBLEM_DIM: 100                       # Number of nodes in the CVRP problem
-MAX_LOAD: 50                           # Maximum vehicle capacity
+PROBLEM_DIM: 50                       # Number of nodes in the CVRP problem
+MAX_LOAD: 40                           # Maximum vehicle capacity
 N_PROBLEMS: 256                        # Number of parallel instances
-DATA: "uchoa"                          # Type of data: random or uchoa
-
-# ============== Clustering ===============
-CLUSTERING: False                      # Enable or disable clustering
-NB_CLUSTERS_MAX: 10                    # Maximum number of clusters if clustering is enabled
-ALT_CLUSTERING: False                   # Use alternate clustering during training
+DATA: "random"                          # Type of data: random or uchoa
 
 # =============== Heuristic & Initial Solution ===============
-HEURISTIC: "insertion"                 # Local search method
-MIX1: "insertion"                           # First local search method if HEURISTIC is "mix"
-MIX2: "swap"                      # Second local search method if HEURISTIC is "mix"
+HEURISTIC: ["insertion"]                 # Local search method (insertion, swap, two_opt)
 
 UPDATE_METHOD: "free"                  # Update method after heuristic
-INIT: "nearest_neighbor"                        # Initial solution method
+INIT: "random"                        # Initial solution method
 MULTI_INIT: True                       # Use multiple initial solutions
-INIT_LIST: ["isolate","random", "sweep", "Clark_and_Wright"] # List of initial solution methods
+INIT_LIST: ["random", "sweep", "Clark_and_Wright"] # List of initial solution methods
 
 # =============== Reward ===============
 CAPACITY_REWARD: False                  # Reward for capacity usage
@@ -38,15 +31,16 @@ REWARD_LAST_ADD: 0.001
 REWARD_VALID: False                   # penalize invalid solutions in reward
 
 # =============== Model Architecture ===============
-ENTRY: 15                              # Input dimension
-EMBEDDING_DIM: 32                      # Embedding dimension
+ENTRY: 17                              # Input dimension
+EMBEDDING_DIM: 64                      # Embedding dimension
 NUM_H_LAYERS: 1                        # Number of layers in the model
 PAIRS: False                            # Enable or disable pair-based model
+ATTENTION: True                        # Enable or disable tropical attention
 
 # =============== Training ===============
 N_EPOCHS: 10000                         # Total number of training epochs
-LR_ACTOR: 0.0001                              # Learning rate
-LR_CRITIC: 0.0001                              # Learning rate
+LR_ACTOR: 0.001                              # Learning rate
+LR_CRITIC: 0.001                              # Learning rate
 WEIGHT_DECAY: 0.001                    # L2 regularization
 BATCH_SIZE: 1024                        # Training batch size 
 
@@ -70,8 +64,8 @@ TARGET_KL: 0.02                        # Target KL divergence
 GP_LAMBDA: 0.01                      # Gradient penalty weight
 
 # =============== Testing during training ===============
-TEST_DIMENSION: 100                    # Test dimension (50 or 100)
-TEST_NB_PROBLEMS: 1000                  # Number of test problems (less than 10,000 for faster testing)
-TEST_OUTER_STEPS: 500
-NAZARI: False                          # Use Nazari et al. (2018) initial solution for testing
-TEST_INIT: "sweep"
+TEST_DIMENSION: 50                    # Test dimension (50 or 100)
+TEST_NB_PROBLEMS: 100                  # Number of test problems (less than 10,000 for faster testing)
+TEST_OUTER_STEPS: 100
+NAZARI: True                          # Use Nazari et al. (2018) initial solution for testing
+TEST_INIT: "random"

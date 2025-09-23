@@ -253,6 +253,11 @@ def is_feasible(
 
     # Check if any route demand exceeds capacity
     feasible = (route_demands <= capacity).all(dim=1)
+
+    start_w_depot = solution[:, 0, 0] == 0
+    end_w_depot = solution[:, -1, 0] == 0
+    feasible = feasible & start_w_depot & end_w_depot
+
     return feasible
 
 
@@ -319,3 +324,69 @@ def capacity_utilization(
     avg_utilization = total_utilization / routes_count
 
     return 1 - avg_utilization
+
+
+def find_indices(x, c1, c2):
+    """
+    Vectorized version for better efficiency.
+    """
+    # Ensure dimensions are compatible
+    assert (
+        x.shape[0] == c1.shape[0] == c2.shape[0]
+    ), "The first dimension must be the same"
+
+    # Reshape tensors
+    x_flat = x.squeeze(-1).long()  # [batch, pb_size]
+    c1_flat = c1.view(-1, 1).long()  # [batch, 1]
+    c2_flat = c2.view(-1, 1).long()  # [batch, 1]
+
+    # Find indices using broadcasting
+    # Compare each element of x with the corresponding value of c1/c2
+    mask1 = x_flat == c1_flat
+    mask2 = x_flat == c2_flat
+
+    # Create a tensor of indices [0, 1, 2, ..., pb_size-1]
+    indices_range = torch.arange(x_flat.shape[1], device=x.device).unsqueeze(0)
+
+    # Use masks to retrieve indices
+    # For values not found, set to -1
+    idx1 = torch.where(
+        mask1.any(dim=1),
+        (mask1 * indices_range).max(dim=1)[0],
+        torch.tensor(-1, device=x.device),
+    )
+    idx2 = torch.where(
+        mask2.any(dim=1),
+        (mask2 * indices_range).max(dim=1)[0],
+        torch.tensor(-1, device=x.device),
+    )
+
+    # Combine results
+    result = torch.stack([idx1, idx2], dim=1)
+
+    return result
+
+
+def get_values_from_indices(x, action):
+    """
+    Retrieve values c1 and c2 from indices in x.
+
+    Args:
+        x: Tensor of shape [batch_size, pb_size, 1]
+        action: Tensor of shape [batch_size, 2] containing the indices
+
+    Returns:
+        c1: Tensor of shape [batch_size, 1]
+        c2: Tensor of shape [batch_size, 1]
+        Optional heuristic_idx: Tensor of shape [batch_size, 1] if action has 3 columns
+    """
+    x_flat = x.squeeze(-1)  # [batch_size, sequence_length]
+
+    # Directly retrieve the values
+    c1 = x_flat[torch.arange(x.shape[0]), action[:, 0].long()].unsqueeze(1).long()
+    c2 = x_flat[torch.arange(x.shape[0]), action[:, 1].long()].unsqueeze(1).long()
+    if action.shape[1] == 3:
+        heuristic_idx = action[:, 2].unsqueeze(1).long()
+        return c1, c2, heuristic_idx
+
+    return c1, c2

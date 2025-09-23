@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from utils import repeat_to
+from algo import TropicalAttention
 
 
 def create_network(input_dim, embed_dim, num_hidden_layers, device):
@@ -314,28 +315,47 @@ class CVRPActor(SAModel):
         device: str = "cpu",
         mixed_heuristic: bool = False,
         method: str = "free",
+        attention: bool = True,
     ) -> None:
         super().__init__(device)
         self.mixed_heuristic = mixed_heuristic
         self.c1_state_dim = c
         self.method = method
-
-        # Mean and std computation
-        self.city1_net = create_network(
-            self.c1_state_dim,
-            embed_dim,
-            num_hidden_layers=num_hidden_layers,
-            device=device,
-        )
+        self.attention = attention
         self.c2_state_dim = c * 2 if mixed_heuristic else c * 2 - 2
 
-        # Mean and std computation
-        self.city2_net = create_network(
-            self.c2_state_dim,
-            embed_dim,
-            num_hidden_layers=num_hidden_layers,
-            device=device,
-        )
+        if self.attention:
+            emb_dim = 16
+            self.route_embedding = nn.Embedding(
+                num_embeddings=50, embedding_dim=emb_dim
+            ).to(device)
+            self.input_proj = nn.Linear(
+                self.c1_state_dim + emb_dim - 2, embed_dim, device=device
+            )
+            self.tropical_attention = TropicalAttention(
+                d_model=embed_dim,
+                n_heads=8,
+                device=device,
+                tropical_proj=True,
+                tropical_norm=False,
+                symmetric=True,
+            )
+            self.city1_net = nn.Linear(embed_dim + 2, 1).to(device)
+            self.city2_net = nn.Linear(embed_dim * 2 + 2, 1).to(device)
+        else:
+            self.city1_net = create_network(
+                self.c1_state_dim,
+                embed_dim,
+                num_hidden_layers=num_hidden_layers,
+                device=device,
+            )
+
+            self.city2_net = create_network(
+                self.c2_state_dim,
+                embed_dim,
+                num_hidden_layers=num_hidden_layers,
+                device=device,
+            )
 
         self.city1_net.apply(self.init_weights)
         self.city2_net.apply(self.init_weights)
@@ -363,7 +383,7 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute logits and log probabilities for given state and action."""
-        c1_state, n_problems = self._prepare_features_city1(state)
+        c1_state, n_problems, routes_ids = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
 
@@ -418,7 +438,12 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, greedy: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
-        c1_state, n_problems = self._prepare_features_city1(state)
+        c1_state, n_problems, routes_ids = self._prepare_features_city1(state)
+
+        if self.attention:
+            # c1_state, _ = self.tropical_attention(c1_state)
+            c1_state = self._forward_attention(c1_state, routes_ids)
+
         logits = self.city1_net(c1_state)[..., 0]
         # Mask logits
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
@@ -454,7 +479,7 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, action: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Evaluate log probabilities of given actions."""
-        c1_state, n_problems = self._prepare_features_city1(state)
+        c1_state, n_problems, routes_ids = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
         if self.mixed_heuristic:
@@ -466,6 +491,10 @@ class CVRPActor(SAModel):
         else:
             # Standard case: action contains [c1, c2]
             c2 = action[:, 1]
+
+        if self.attention:
+            # c1_state, _ = self.tropical_attention(c1_state)
+            c1_state = self._forward_attention(c1_state, routes_ids)
 
         # City 1 net
         logits = self.city1_net(c1_state)[..., 0]
@@ -494,6 +523,17 @@ class CVRPActor(SAModel):
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * (dim - 3), dim=-1
         )
+
+        if self.attention:
+            # Remove the last column of extra_features and store it in routes_ids
+            *extra_features, routes_ids = (
+                extra_features[:-1],
+                extra_features[-1],
+            )
+            extra_features = extra_features[0]
+            routes_ids = routes_ids.squeeze(-1).long()
+        else:
+            routes_ids = None
         # Gather coordinate information
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
@@ -511,7 +551,7 @@ class CVRPActor(SAModel):
         if self.method == "rm_depot":
             mask = x.squeeze(-1) != 0
             c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
-        return c_state, n_problems
+        return c_state, n_problems, routes_ids
 
     def _prepare_features_city2(
         self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
@@ -539,6 +579,18 @@ class CVRPActor(SAModel):
             c2_state = torch.cat([c2_state, heuristic_one_hot], dim=-1)
         return c2_state
 
+    def _forward_attention(
+        self, state: torch.Tensor, routes_ids: torch.Tensor
+    ) -> torch.Tensor:
+        emb = self.route_embedding(routes_ids)
+        time_temp = state[:, :, -2:]
+        state = state[:, :, :-2]
+        state = torch.cat([state, emb], dim=-1)
+        state = self.input_proj(state)
+        attn, _ = self.tropical_attention(state)
+        attn = torch.cat([attn, time_temp], dim=-1)
+        return attn
+
 
 class CVRPCritic(nn.Module):
     """Critic network for CVRP that estimates state values."""
@@ -549,6 +601,7 @@ class CVRPCritic(nn.Module):
         c: int = 13,
         num_hidden_layers: int = 2,
         device: str = "cpu",
+        attention: bool = True,
     ) -> None:
         super().__init__()
         self.q_func = create_network(
@@ -558,6 +611,7 @@ class CVRPCritic(nn.Module):
             device=device,
         )
         self.q_func.apply(self.init_weights)
+        self.attention = attention
 
     @staticmethod
     def init_weights(m: nn.Module) -> None:
@@ -575,12 +629,21 @@ class CVRPCritic(nn.Module):
             state, [1, 2] + [1] * num_extra_features, dim=-1
         )
 
+        if self.attention:
+            # Remove the last column of extra_features and store it in routes_ids
+            *extra_features, _ = (
+                extra_features[:-1],
+                extra_features[-1],
+            )
+            extra_features = extra_features[0]
+
         # Gather current, previous and next coordinates
         coords = coords.gather(1, x.long().expand_as(coords))
         coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
         coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
 
         state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
+
         q_values = self.q_func(state).view(n_problems, problem_dim)
         return q_values.mean(dim=-1)
 

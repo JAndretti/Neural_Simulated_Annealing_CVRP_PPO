@@ -28,8 +28,8 @@ def two_opt(x: torch.Tensor, a: torch.Tensor):
     Perform 2-opt move by reversing segment between indices.
 
     Args:
-        solution: Tensor [batch, num_nodes, 1]
-        indices: Tensor [batch, 2] containing segment endpoints
+        x: Tensor [batch, num_nodes, 1]
+        a: Tensor [batch, 2] containing segment endpoints
 
     Returns:
         Solution with reversed segment

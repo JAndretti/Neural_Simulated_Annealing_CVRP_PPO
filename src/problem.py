@@ -324,6 +324,8 @@ class CVRP(Problem):
         divisor = torch.clamp(max_dist - min_dist, min=1e-10)
         # Normalize each row to [0,1] range
         self.dist_to_depot = ((self.dist_to_depot - min_dist) / divisor).unsqueeze(-1)
+        # coords of depot
+        self.depot_coords = self.coords[:, 0, :].unsqueeze(1)  # [batch, 1, 2]
 
     # --------------------------------
     # Problem Instance Generation
@@ -426,10 +428,12 @@ class CVRP(Problem):
         padding = max(0, x.size(1) - self.state_encoding.size(1))
         padded_coords = F.pad(self.state_encoding, (0, 0, 0, padding))
         is_depot = (x == 0).long()  # Identify depot visits
+        depot_coords_pad = self.depot_coords.repeat(1, padded_coords.size(1), 1)
 
-        return [
+        lst = [
             x,  # Current solution
             padded_coords,  # Node coordinates
+            depot_coords_pad,
             is_depot,  # Depot indicator
             self.angles.gather(1, x),  # Angles in solution order
             self.dist_to_depot.gather(1, x),  # Distance to depot
@@ -438,6 +442,9 @@ class CVRP(Problem):
             repeat_to(temp, x),  # Temperature parameter
             repeat_to(time, x),  # Time information
         ]
+        if self.params["ATTENTION"]:
+            lst.append(self.segment_ids.unsqueeze(-1))  # Segment IDs
+        return lst
 
     @property
     def state_encoding(self) -> torch.Tensor:

@@ -16,6 +16,8 @@ from .generate_uchoa import P_generate_instances, stack_res
 
 from .local_heuristics import swap, two_opt, insertion
 
+from .TropicalAttention import TropicalAttention
+
 __all__ = [
     "or_tools",
     "test_or_tools",
@@ -35,4 +37,5 @@ __all__ = [
     "swap",
     "two_opt",
     "insertion",
+    "TropicalAttention",
 ]

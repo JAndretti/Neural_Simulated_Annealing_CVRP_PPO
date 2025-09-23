@@ -476,6 +476,7 @@ def initialize_models(
             device=device,
             mixed_heuristic=use_mixed_heuristic,
             method=config["UPDATE_METHOD"],
+            attention=config["ATTENTION"],
         )
 
     actor.manual_seed(config["SEED"])
@@ -487,6 +488,7 @@ def initialize_models(
         c=config["ENTRY"],
         num_hidden_layers=config["NUM_H_LAYERS"],
         device=device,
+        attention=config["ATTENTION"],
     )
     logger.info("Critic model initialized")
 
