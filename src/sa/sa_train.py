@@ -328,19 +328,20 @@ def calculate_reward(
         reward_signal = (actual_improvement / initial_cost).view(-1, 1)
 
     elif config["REWARD"] == "min_cost":
-        reward_signal = scale_positive_negative(
-            ((initial_cost + best_cost) / initial_cost).view(-1, 1)
-        )
+        reward_signal = ((initial_cost + best_cost) / initial_cost).view(-1, 1)
+
     elif config["REWARD"] == "primal":
         reward_signal = -cumulative_cost.view(-1, 1)
 
     if config["REWARD_VALID"]:
-        reward_signal[~is_valid.view(-1, 1)] = -1
+        reward_signal[~is_valid.view(-1, 1)] = -1.0  # Penalize invalid solutions
 
     if config["REWARD_LAST"] and last_step:
-        reward_signal += config["REWARD_LAST_SCALE"] * scale_positive_negative(
-            ((initial_cost - best_cost) / initial_cost).view(-1, 1)
-        )
+        reward_signal = config["REWARD_LAST_SCALE"] * (
+            (initial_cost - best_cost) / initial_cost
+        ).view(-1, 1)
+    if config["NORMALIZE_REWARD"]:
+        reward_signal = scale_positive_negative(reward_signal)
 
     return reward_signal
 

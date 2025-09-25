@@ -28,7 +28,7 @@ from tqdm import tqdm
 # Import custom modules
 # --------------------------------
 from setup import _HP, get_script_arguments, WandbLogger
-from model import CVRPActor, CVRPActorPairs, CVRPCritic
+from model import CVRPActor, CVRPActorPairs, CVRPCritic, CVRPActorTropicalAttention
 from ppo import ppo, ReplayBuffer
 from problem import CVRP
 from sa import sa_train
@@ -87,6 +87,8 @@ def log_training_and_test_metrics(
     critic_loss: Optional[float],
     avg_actor_grad: float,
     avg_critic_grad: float,
+    lr_actor: float,
+    beta_kl: float,
     test_results: Optional[Dict[str, torch.Tensor]],
     epoch: int,
     config: Dict[str, Any],
@@ -114,6 +116,8 @@ def log_training_and_test_metrics(
                 "Train_loss": actor_loss + 0.5 * critic_loss,
                 "Avg_actor_grad": avg_actor_grad,
                 "Avg_critic_grad": avg_critic_grad,
+                "LR_actor": lr_actor,
+                "Beta_KL": beta_kl,
             }
         )
 
@@ -213,7 +217,7 @@ def train_ppo(
     )
 
     # Optimize policy using PPO
-    actor_loss, critic_loss = ppo(
+    actor_loss, critic_loss, beta_kl = ppo(
         actor=actor,
         critic=critic,
         pb_dim=initial_solutions.shape[1],
@@ -243,7 +247,7 @@ def train_ppo(
     if problem.device == "cuda":
         torch.cuda.empty_cache()
 
-    return sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad
+    return sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad, beta_kl
 
 
 def test_model(
@@ -459,7 +463,7 @@ def initialize_models(
     use_mixed_heuristic = len(config["HEURISTIC"]) > 1
 
     # Initialize actor model (with or without pairs)
-    if config["PAIRS"]:
+    if config["MODEL"] == "pairs":
         actor = CVRPActorPairs(
             embed_dim=config["EMBEDDING_DIM"],
             c=config["ENTRY"],
@@ -468,7 +472,7 @@ def initialize_models(
             mixed_heuristic=use_mixed_heuristic,
             method=config["UPDATE_METHOD"],
         )
-    else:
+    elif config["MODEL"] == "seq":
         actor = CVRPActor(
             embed_dim=config["EMBEDDING_DIM"],
             c=config["ENTRY"],
@@ -478,6 +482,14 @@ def initialize_models(
             method=config["UPDATE_METHOD"],
             attention=config["ATTENTION"],
         )
+    elif config["MODEL"] == "attention":
+        actor = CVRPActorTropicalAttention(
+            embed_dim=config["EMBEDDING_DIM"],
+            c=config["ENTRY"],
+            device=device,
+        )
+    else:
+        raise ValueError(f"Unknown model type specified: {config['MODEL']}")
 
     actor.manual_seed(config["SEED"])
     logger.info(f"Actor model initialized: {actor.__class__.__name__}")
@@ -488,7 +500,7 @@ def initialize_models(
         c=config["ENTRY"],
         num_hidden_layers=config["NUM_H_LAYERS"],
         device=device,
-        attention=config["ATTENTION"],
+        attention=(config["MODEL"] == "attention"),
     )
     logger.info("Critic model initialized")
 
@@ -586,9 +598,16 @@ def main(config: Dict[str, Any]) -> None:
             )
 
             # Unpack training results
-            (sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad) = (
-                training_results
-            )
+            (
+                sa_results,
+                actor_loss,
+                critic_loss,
+                avg_actor_grad,
+                avg_critic_grad,
+                beta_kl,
+            ) = training_results
+
+            config["BETA_KL"] = beta_kl  # Update beta_kl from PPO
 
             # Periodic testing and evaluation
             test_results = None
@@ -605,11 +624,14 @@ def main(config: Dict[str, Any]) -> None:
 
             # Log metrics to WandB
             if config["LOG"]:
+                lr_actor = actor_optimizer.param_groups[0]["lr"]
                 log_training_and_test_metrics(
                     actor_loss=actor_loss,
                     critic_loss=critic_loss,
                     avg_actor_grad=avg_actor_grad,
                     avg_critic_grad=avg_critic_grad,
+                    lr_actor=lr_actor,
+                    beta_kl=config["BETA_KL"],
                     test_results=(
                         test_results if (epoch >= 10) else initial_test_results
                     ),
@@ -639,7 +661,7 @@ def main(config: Dict[str, Any]) -> None:
                     best_loss_value = min(current_test_loss.item(), best_loss_value)
 
                 # Trigger early stopping if no improvement for too long
-                if early_stopping_counter > 5:
+                if early_stopping_counter > 10:
                     logger.warning(
                         f"Early stopping triggered at epoch {epoch} "
                         f"with loss {best_loss_value:.4f}"

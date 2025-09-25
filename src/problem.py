@@ -442,7 +442,7 @@ class CVRP(Problem):
             repeat_to(temp, x),  # Temperature parameter
             repeat_to(time, x),  # Time information
         ]
-        if self.params["ATTENTION"]:
+        if self.params["MODEL"] == "attention":
             lst.append(self.segment_ids.unsqueeze(-1))  # Segment IDs
         return lst
 

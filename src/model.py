@@ -340,8 +340,20 @@ class CVRPActor(SAModel):
                 tropical_norm=False,
                 symmetric=True,
             )
-            self.city1_net = nn.Linear(embed_dim + 2, 1).to(device)
-            self.city2_net = nn.Linear(embed_dim * 2 + 2, 1).to(device)
+            self.city1_net = create_network(
+                embed_dim + 2,
+                embed_dim // 2,
+                num_hidden_layers=0,
+                device=device,
+            )
+            self.city2_net = create_network(
+                embed_dim * 2 + 2,
+                embed_dim // 2,
+                num_hidden_layers=0,
+                device=device,
+            )
+            # self.city1_net = nn.Linear(embed_dim + 2, 1).to(device)
+            # self.city2_net = nn.Linear(embed_dim * 2 + 2, 1).to(device)
         else:
             self.city1_net = create_network(
                 self.c1_state_dim,
@@ -650,3 +662,180 @@ class CVRPCritic(nn.Module):
     def reset_weights(self):
         """Reset the weights of the critic network."""
         self.q_func.apply(self.init_weights)
+
+
+class CVRPActorTropicalAttention(SAModel):
+
+    def __init__(
+        self,
+        embed_dim: int = 128,
+        c: int = 13,
+        device: str = "cpu",
+    ) -> None:
+        super().__init__(device)
+        self.c1_state_dim = c
+        self.c2_state_dim = c * 2
+
+        emb_dim = 16
+        self.route_embedding = nn.Embedding(
+            num_embeddings=50, embedding_dim=emb_dim
+        ).to(device)
+
+        self.input_proj = nn.Sequential(
+            nn.Linear(self.c1_state_dim + emb_dim, embed_dim),  # 5 features par client
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+        ).to(device)
+        self.n_heads = 8
+        assert embed_dim % self.n_heads == 0, "embed_dim must be divisible by n_heads"
+        self.tropical_attention = TropicalAttention(
+            d_model=embed_dim,
+            n_heads=self.n_heads,
+            device=device,
+            tropical_proj=True,
+            tropical_norm=False,
+            symmetric=True,
+        )
+
+    def sample(
+        self, state: torch.Tensor, greedy: bool = False, **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample an action pair from the current state."""
+        c1_state, n_problems, routes_ids = self._prepare_features_city1(state)
+
+        attn_score = self._forward_attention(c1_state, routes_ids)
+
+        batch_size, S, _ = attn_score.shape
+
+        flat_scores = attn_score.view(batch_size, -1)  # [batch_size, S*S]
+        pair_probs = F.softmax(flat_scores, dim=-1)  # Probabilities over pairs
+
+        if greedy:
+            max_idx = torch.argmax(flat_scores, dim=-1)
+        else:
+            max_idx = torch.multinomial(pair_probs, 1).squeeze(-1)
+
+        # Compute log-probabilities
+        log_probs = torch.log(
+            pair_probs.gather(1, max_idx.unsqueeze(1)).squeeze(1) + 1e-8
+        )
+
+        # Convert to indices (i, j)
+        node_i = max_idx // S
+        node_j = max_idx % S
+        action = torch.stack([node_i, node_j], dim=1)
+
+        return action, log_probs
+
+    def evaluate(
+        self, state: torch.Tensor, action: torch.Tensor, **kwargs
+    ) -> torch.Tensor:
+        """Evaluate log probabilities of given actions."""
+        c1_state, n_problems, routes_ids = self._prepare_features_city1(state)
+
+        # Get attention scores
+        attn_score = self._forward_attention(c1_state, routes_ids)  # [batch_size, S, S]
+
+        batch_size, S, _ = attn_score.shape
+
+        # Extract node_i and node_j from the action
+        node_i = action[:, 0]  # [batch_size]
+        node_j = action[:, 1]  # [batch_size]
+
+        # Flatten the scores
+        flat_scores = attn_score.view(batch_size, -1)  # [batch_size, S*S]
+        pair_probs = F.softmax(flat_scores, dim=-1)  # [batch_size, S*S]
+
+        # Convert actions (i, j) to flat indices
+        flat_indices = node_i * S + node_j  # [batch_size]
+
+        # Retrieve the corresponding log-probabilities
+        log_probs = torch.log(
+            pair_probs.gather(1, flat_indices.unsqueeze(1)).squeeze(1) + 1e-8
+        )
+
+        return log_probs
+
+    def _prepare_features_city1(
+        self, state: torch.Tensor
+    ) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        """Helper method to prepare features from state."""
+        n_problems, problem_dim, dim = state.shape
+
+        x, coords, *extra_features = torch.split(
+            state, [1, 2] + [1] * (dim - 3), dim=-1
+        )
+
+        # Remove the last column of extra_features and store it in routes_ids
+        *extra_features, routes_ids = (
+            extra_features[:-1],
+            extra_features[-1],
+        )
+        extra_features = extra_features[0]
+        routes_ids = routes_ids.squeeze(-1).long()
+
+        # Gather coordinate information
+        coords = coords.gather(1, x.long().expand_as(coords))
+        coords_prev = torch.cat([coords[:, -1:, :], coords[:, :-1, :]], dim=1)
+        coords_next = torch.cat([coords[:, 1:, :], coords[:, :1, :]], dim=1)
+        # Add temp and time to the concatenated state
+        c_state = torch.cat(
+            [
+                coords,
+                coords_prev,
+                coords_next,
+            ]
+            + extra_features,
+            -1,
+        )
+        return c_state, n_problems, routes_ids
+
+    def _forward_attention(
+        self, state: torch.Tensor, routes_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Forward pass through the attention mechanism to get pair scores."""
+        batch_size = state.shape[0]
+        emb = self.route_embedding(routes_ids)
+        state = torch.cat([state, emb], dim=-1)
+        state = self.input_proj(state)
+        _, attn_score = self.tropical_attention(state)
+        attn_score = self._get_pair_scores(attn_score, batch_size)
+        eye_mask = (
+            ~torch.eye(attn_score.shape[1], device=attn_score.device)
+            .bool()
+            .unsqueeze(0)
+        )
+        masked_scores = attn_score.masked_fill(~eye_mask, float("-inf"))
+        return masked_scores
+
+    def _get_pair_scores(self, attn_scores, batch_size, reduction="mean"):
+        """
+        Converts attn_scores [batch_size * n_heads, S, S]
+        into a tensor [batch_size, S, S] or [batch_size, S, S, n_heads].
+
+        Args:
+            attn_scores (Tensor): scores of shape [batch_size * n_heads, S, S]
+            batch_size (int): size of the batch
+            reduction (str): "mean", "max" or "none"
+                    - "mean": average over heads -> [batch_size, S, S]
+                    - "max": max over heads     -> [batch_size, S, S]
+                    - "none": keep all heads    -> [batch_size, S, S, n_heads]
+
+        Returns:
+            Tensor: pair scores based on the chosen reduction
+        """
+        # Reshape
+        B, S, _ = attn_scores.shape
+        assert B == batch_size * self.n_heads, "Inconsistent batch dimension"
+        attn_scores = attn_scores.view(
+            batch_size, self.n_heads, S, S
+        )  # [batch_size, n_heads, S, S]
+
+        if reduction == "mean":
+            return attn_scores.mean(dim=1)  # [batch_size, S, S]
+        elif reduction == "max":
+            return attn_scores.max(dim=1).values  # [batch_size, S, S]
+        elif reduction == "none":
+            return attn_scores.permute(0, 2, 3, 1)  # [batch_size, S, S, n_heads]
+        else:
+            raise ValueError(f"Unknown reduction: {reduction}")

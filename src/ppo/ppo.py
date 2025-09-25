@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.optim import Optimizer
 from loguru import logger
-from tqdm import tqdm  # Progress bar for iterations
+from tqdm import tqdm
 
 from model import SAModel
 from .replay import ReplayBuffer, Transition
@@ -75,6 +75,7 @@ def run_ppo_training_epochs(
     old_log_probs,
     advantages,
     returns,
+    beta_kl,
     cfg,
     curr_epoch,
 ):
@@ -88,6 +89,12 @@ def run_ppo_training_epochs(
     ent_coef = cfg["ENT_COEF"]
     gp_lam = cfg["GP_LAMBDA"]
     target_KL = cfg["TARGET_KL"]
+    beta_inc = 2.0  # factor to increase if KL too high
+    beta_dec = 0.5  # factor to decrease if KL too low
+    LR_MAX = 1e-3
+    LR_MIN = 1e-5
+    BETA_MIN = 1e-3
+    BETA_MAX = 10.0
 
     # === Preparation for PPO Epochs ===
     total_samples = state.size(0)
@@ -160,6 +167,14 @@ def run_ppo_training_epochs(
             # Clipped PPO loss
             actor_loss = -torch.min(surr1, surr2).mean()
 
+            # Compute KL div for monitoring and early stopping
+            # with torch.no_grad():
+            delta_log = batch_old_log_probs - batch_log_probs
+            kl = (delta_log.exp() * delta_log).mean()
+            approx_kl_divs.append(kl.item())
+
+            actor_loss += beta_kl * kl  # KL penalty
+
             # Entropy bonus for exploration
             entropy = -(torch.exp(batch_log_probs) * batch_log_probs).mean()
             if torch.isnan(entropy):
@@ -187,24 +202,40 @@ def run_ppo_training_epochs(
             total_actor_loss += actor_loss.item()
             total_critic_loss += critic_loss.item()
             num_batches += 1
-            with torch.no_grad():
-                # Compute KL div for monitoring and early stopping
-                kl_div = (batch_old_log_probs - batch_log_probs).mean().item()
-                approx_kl_divs.append(kl_div)
 
         # Check KL Divergence at the end of the epoch for early stopping
         avg_kl = sum(approx_kl_divs) / len(approx_kl_divs)
         if avg_kl > 1.5 * target_KL:
-            logger.warning(
-                f"KL divergence ({avg_kl:.3f}) exceeded target. Stopping PPO "
-                "training early."
-            )
-            break
+            beta_kl = min(beta_kl * beta_inc, BETA_MAX)
+            for g in actor_opt.param_groups:
+                g["lr"] = max(
+                    g["lr"] * 0.95, LR_MIN
+                )  # Reduce the learning rate by 5%, but not below LR_MIN
+            if cfg["VERBOSE"]:
+                logger.info(
+                    f"KL ({avg_kl:.4f}) > 1.5 * target ({target_KL}), "
+                    f"reducing learning rate to {actor_opt.param_groups[0]['lr']:.6f}"
+                    f", increasing beta_kl={beta_kl:.4f}"
+                )
+
+        elif avg_kl < 0.5 * target_KL:
+            beta_kl = max(beta_kl * beta_dec, BETA_MIN)
+            for g in actor_opt.param_groups:
+                g["lr"] = min(
+                    g["lr"] * 1.05, LR_MAX
+                )  # Slightly increase the learning rate, but not above LR_MAX
+            if cfg["VERBOSE"]:
+                logger.info(
+                    f"KL ({avg_kl:.4f}) < 0.5 * target ({target_KL}), "
+                    f"increasing learning rate to {actor_opt.param_groups[0]['lr']:.6f}"
+                    f", decreasing beta_kl={beta_kl:.4f}"
+                )
 
     # Return average losses
     return (
         total_actor_loss / num_batches if num_batches > 0 else 0,
         total_critic_loss / num_batches if num_batches > 0 else 0,
+        beta_kl,
     )
 
 
@@ -241,10 +272,10 @@ def ppo(
     trace_decay = cfg[
         "TRACE_DECAY"
     ]  # λ (lambda) for GAE - controls bias-variance tradeoff
-
     n_problems = cfg["N_PROBLEMS"]  # Number of parallel problem instances
     problem_dim = pb_dim
     gamma = cfg["GAMMA"]  # Discount factor for future rewards
+    beta_kl = cfg["BETA_KL"]  # Initial KL penalty coefficient
     end_device = cfg["DEVICE"]  # Computation device (CPU/GPU)
     device = DEVICE
 
@@ -338,7 +369,7 @@ def ppo(
 
     # === 4. PPO Optimization Loop ===
     # Perform multiple epochs of optimization on the collected data
-    actor_loss, critic_loss = run_ppo_training_epochs(
+    actor_loss, critic_loss, beta_kl = run_ppo_training_epochs(
         actor,
         critic,
         actor_opt,
@@ -348,9 +379,10 @@ def ppo(
         old_log_probs,
         advantages,
         returns,
+        beta_kl,
         cfg,
         curr_epoch,
     )
     actor.to(end_device)
     critic.to(end_device)
-    return (actor_loss, critic_loss)
+    return (actor_loss, critic_loss, beta_kl)
