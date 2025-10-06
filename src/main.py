@@ -28,7 +28,7 @@ from tqdm import tqdm
 # Import custom modules
 # --------------------------------
 from setup import _HP, get_script_arguments, WandbLogger
-from model import CVRPActor, CVRPActorPairs, CVRPCritic, CVRPActorTropicalAttention
+from model import CVRPActor, CVRPActorPairs, CVRPCritic
 from ppo import ppo, ReplayBuffer
 from problem import CVRP
 from sa import sa_train
@@ -89,6 +89,7 @@ def log_training_and_test_metrics(
     avg_critic_grad: float,
     lr_actor: float,
     beta_kl: float,
+    entropy: float,
     test_results: Optional[Dict[str, torch.Tensor]],
     epoch: int,
     config: Dict[str, Any],
@@ -118,6 +119,7 @@ def log_training_and_test_metrics(
                 "Avg_critic_grad": avg_critic_grad,
                 "LR_actor": lr_actor,
                 "Beta_KL": beta_kl,
+                "Entropy": entropy,
             }
         )
 
@@ -217,7 +219,7 @@ def train_ppo(
     )
 
     # Optimize policy using PPO
-    actor_loss, critic_loss, beta_kl = ppo(
+    train_stats = ppo(
         actor=actor,
         critic=critic,
         pb_dim=initial_solutions.shape[1],
@@ -247,7 +249,7 @@ def train_ppo(
     if problem.device == "cuda":
         torch.cuda.empty_cache()
 
-    return sa_results, actor_loss, critic_loss, avg_actor_grad, avg_critic_grad, beta_kl
+    return sa_results, train_stats, avg_actor_grad, avg_critic_grad
 
 
 def test_model(
@@ -285,6 +287,7 @@ def test_model(
         greedy=False,
         train=False,
     )
+
     config["OUTER_STEPS"] = tmp
 
     # Clean up GPU memory
@@ -480,13 +483,6 @@ def initialize_models(
             device=device,
             mixed_heuristic=use_mixed_heuristic,
             method=config["UPDATE_METHOD"],
-            attention=config["ATTENTION"],
-        )
-    elif config["MODEL"] == "attention":
-        actor = CVRPActorTropicalAttention(
-            embed_dim=config["EMBEDDING_DIM"],
-            c=config["ENTRY"],
-            device=device,
         )
     else:
         raise ValueError(f"Unknown model type specified: {config['MODEL']}")
@@ -535,9 +531,6 @@ def main(config: Dict[str, Any]) -> None:
 
     # Initialize test problem environment
     test_problem, initial_test_solutions = initialize_test_problem(config, device)
-
-    if config["REWARD_LAST"]:
-        config["ALPHA_LAST"] = 0
 
     # Initialize neural network models
     actor, critic = initialize_models(config, device)
@@ -600,12 +593,12 @@ def main(config: Dict[str, Any]) -> None:
             # Unpack training results
             (
                 sa_results,
-                actor_loss,
-                critic_loss,
+                train_stats,
                 avg_actor_grad,
                 avg_critic_grad,
-                beta_kl,
             ) = training_results
+
+            actor_loss, critic_loss, avg_entropy, beta_kl = train_stats
 
             config["BETA_KL"] = beta_kl  # Update beta_kl from PPO
 
@@ -631,7 +624,8 @@ def main(config: Dict[str, Any]) -> None:
                     avg_actor_grad=avg_actor_grad,
                     avg_critic_grad=avg_critic_grad,
                     lr_actor=lr_actor,
-                    beta_kl=config["BETA_KL"],
+                    beta_kl=beta_kl,
+                    entropy=avg_entropy,
                     test_results=(
                         test_results if (epoch >= 10) else initial_test_results
                     ),
@@ -661,7 +655,7 @@ def main(config: Dict[str, Any]) -> None:
                     best_loss_value = min(current_test_loss.item(), best_loss_value)
 
                 # Trigger early stopping if no improvement for too long
-                if early_stopping_counter > 10:
+                if early_stopping_counter > 5:
                     logger.warning(
                         f"Early stopping triggered at epoch {epoch} "
                         f"with loss {best_loss_value:.4f}"

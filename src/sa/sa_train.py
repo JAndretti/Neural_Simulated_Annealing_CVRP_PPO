@@ -153,6 +153,7 @@ def generate_action(
     baseline: bool,
     greedy: bool,
     random_std: float,
+    train: bool,
     problem: Problem,
     device: torch.device,
 ):
@@ -164,7 +165,9 @@ def generate_action(
                     current_state, random_std=random_std, problem=problem
                 )
             else:
-                res = actor.sample(current_state, greedy=greedy, problem=problem)
+                res = actor.sample(
+                    current_state, greedy=greedy, problem=problem, train=train
+                )
     if device.type == "cuda":
         torch.cuda.empty_cache()
     return res
@@ -284,27 +287,6 @@ def update_best_solution(
 # ================================
 # CAPACITY AND REWARD PROCESSING
 # ================================
-
-
-def apply_capacity_reward(
-    config: dict,
-    problem: Problem,
-    current_solution: torch.Tensor,
-    capacity_left: torch.Tensor,
-    actual_improvement: torch.Tensor,
-):
-    """Apply capacity-based reward adjustment."""
-    if config["CAPACITY_REWARD"]:
-        new_capacity_left = problem.capacity_utilization(current_solution)
-        # if old capacity is bigger than new, it's a positive reward so we soustract it
-        diff_capacity = config["CAPACITY_REWARD_FACTOR"] * (
-            new_capacity_left - capacity_left
-        )
-        actual_improvement = actual_improvement - torch.minimum(
-            diff_capacity, torch.tensor(0.0, device=diff_capacity.device)
-        )
-        return actual_improvement, new_capacity_left
-    return actual_improvement, capacity_left
 
 
 def calculate_reward(
@@ -458,7 +440,14 @@ def sa_train(
 
             # Generate action from policy
             action, action_log_prob = generate_action(
-                actor, current_state, baseline, greedy, random_std, problem, device
+                actor,
+                current_state,
+                baseline,
+                greedy,
+                random_std,
+                train,
+                problem,
+                device,
             )
 
             # Process heuristic tracking
@@ -499,17 +488,6 @@ def sa_train(
                     solution_data,
                     opt_state["current_cost"],
                     opt_state["current_solution"],
-                )
-            )
-
-            # Apply capacity reward if enabled
-            solution_data["actual_improvement"], opt_state["capacity_left"] = (
-                apply_capacity_reward(
-                    config,
-                    problem,
-                    opt_state["current_solution"],
-                    opt_state["capacity_left"],
-                    solution_data["actual_improvement"],
                 )
             )
 

@@ -114,6 +114,7 @@ def run_ppo_training_epochs(
     ):
         total_actor_loss = 0
         total_critic_loss = 0
+        total_entropy = 0
         approx_kl_divs = []
         num_batches = 0
 
@@ -201,6 +202,9 @@ def run_ppo_training_epochs(
             # --- Metrics tracking ---
             total_actor_loss += actor_loss.item()
             total_critic_loss += critic_loss.item()
+            total_entropy += (
+                entropy.item() if isinstance(entropy, torch.Tensor) else entropy
+            )
             num_batches += 1
 
         # Check KL Divergence at the end of the epoch for early stopping
@@ -231,10 +235,11 @@ def run_ppo_training_epochs(
                     f", decreasing beta_kl={beta_kl:.4f}"
                 )
 
-    # Return average losses
+    # Return average losses and entropy
     return (
         total_actor_loss / num_batches if num_batches > 0 else 0,
         total_critic_loss / num_batches if num_batches > 0 else 0,
+        total_entropy / num_batches if num_batches > 0 else 0,
         beta_kl,
     )
 
@@ -248,7 +253,7 @@ def ppo(
     critic_opt: Optimizer,
     curr_epoch: int,
     cfg: dict,
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float, float, float]:
     """
     Proximal Policy Optimization (PPO) implementation for CVRP.
 
@@ -265,7 +270,7 @@ def ppo(
         cfg: Configuration dictionary with hyperparameters
 
     Returns:
-        Tuple containing actor and critic losses
+        Tuple containing actor loss, critic loss, average entropy, and beta_kl
     """
 
     # === Hyperparameters ===
@@ -369,7 +374,7 @@ def ppo(
 
     # === 4. PPO Optimization Loop ===
     # Perform multiple epochs of optimization on the collected data
-    actor_loss, critic_loss, beta_kl = run_ppo_training_epochs(
+    actor_loss, critic_loss, avg_entropy, beta_kl = run_ppo_training_epochs(
         actor,
         critic,
         actor_opt,
@@ -385,4 +390,4 @@ def ppo(
     )
     actor.to(end_device)
     critic.to(end_device)
-    return (actor_loss, critic_loss, beta_kl)
+    return (actor_loss, critic_loss, avg_entropy, beta_kl)

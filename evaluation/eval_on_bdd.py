@@ -32,17 +32,17 @@ logger.add(
 
 # TO FILL
 ###########################################################################
-MODEL = "20250912_140900_bmgtl0xy"
+MODEL = "20250924_113949_i9ud7n0c"
 cfg = {
     "PROBLEM_DIM": 100,
     "N_PROBLEMS": 10_000,
-    "OUTER_STEPS": 100_000,
+    "OUTER_STEPS": 10_000,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
-    "INIT": "nearest_neighbor",  # "random", "isolate", "cw"
+    "INIT": "random",  # "random", "isolate", "cw"
     "SEED": 0,
     "LOAD_PB": True,
     "MULTI_INIT": False,
@@ -177,6 +177,7 @@ if __name__ == "__main__":
     problem, init_x, initial_cost = init_pb(
         CFG, node_coords_tensor_n, demands_tensor, capacity_tensor
     )
+    problem.set_heuristic(CFG["HEURISTIC"])
     # Calculate distances using the solutions and non-normalized node coordinates
     distances = []
     for sol, dist_mat in zip(init_x, matrixes):
