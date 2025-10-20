@@ -510,6 +510,10 @@ class CVRPActor(SAModel):
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs.gather(1, c2.view(-1, 1)))
 
+        # Print the logit of c2 if it is -inf
+        if torch.any(logits[torch.arange(n_problems), c2] == -float("inf")):
+            print("Logits of c2 contain -inf:", logits[torch.arange(n_problems), c2])
+
         # Construct log-probabilities and return
         log_probs = log_probs_c1 + log_probs_c2
         return log_probs[..., 0]
