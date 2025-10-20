@@ -651,7 +651,10 @@ class CVRP(Problem):
                 )
                 sol = torch.cat([sol, padding], dim=1)
 
-        elif self.params["UPDATE_METHOD"] == "free":
+        elif (
+            self.params["UPDATE_METHOD"] == "free"
+            or self.params["UPDATE_METHOD"] == "valid"
+        ):
             # Second approach: Apply heuristic directly on full solution
             # (including depot visits)
             sol = self.apply_heuristic(solution, action).long()
@@ -679,3 +682,193 @@ class CVRP(Problem):
         sol = torch.where(valid.unsqueeze(-1) == 1, sol, solution).to(torch.int64)
 
         return sol, valid
+
+    def _get_current_route_loads(self) -> torch.Tensor:
+        """
+        Calcule la charge totale (somme des demandes) pour chaque route.
+
+        Returns:
+            Un tenseur [batch, max_routes] contenant la charge de chaque route.
+            L'index correspond à l'ID de la route (segment_id).
+        """
+        # On trouve le nombre max de routes dans le batch pour dimensionner le tenseur
+        num_routes = self.segment_ids.max() + 1
+        route_loads = torch.zeros(
+            self.n_problems,
+            num_routes,
+            device=self.device,
+            dtype=self.ordered_demands.dtype,
+        )
+
+        # scatter_add_ somme les demandes (self.ordered_demands)
+        # dans les bons "bins" de route (indexés par self.segment_ids)
+        route_loads.scatter_add_(1, self.segment_ids, self.ordered_demands)
+        return route_loads
+
+    def get_action_mask(
+        self, solution: torch.Tensor, node_pos: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Generates a mask of valid actions for a given node, respecting
+        vehicle capacity constraints.
+
+        Args:
+            solution: The current solution, shape [batch, num_nodes, 1].
+            node_pos: The *position* index of the source node in the tour,
+                    shape [batch, 1].
+
+        Returns:
+            A boolean mask of shape [batch, num_nodes] where `True`
+            represents a valid action.
+        """
+        batch_size, num_nodes, _ = solution.shape
+
+        # 1. Calculate current loads for all routes
+        current_route_loads = self._get_current_route_loads()
+
+        node_pos = node_pos.unsqueeze(-1)
+
+        # 2. Get info for the source node (the one to be moved)
+        # .gather() selects values at the indices specified by node_pos
+        source_demand = torch.gather(self.ordered_demands, 1, node_pos)
+        source_route_id = torch.gather(self.segment_ids, 1, node_pos)
+        source_route_load = torch.gather(current_route_loads, 1, source_route_id)
+
+        # 3. Get info for all potential target nodes
+        target_demands = self.ordered_demands
+        target_route_ids = self.segment_ids
+        # .gather() here retrieves the route load for EACH target node
+        target_route_loads = torch.gather(current_route_loads, 1, target_route_ids)
+
+        # Mask for depot positions (depot has segment_id == 0)
+        is_depot_mask = self.segment_ids == 0
+
+        # --- Heuristic-specific logic ---
+        heuristic_func = self.heuristic
+        if heuristic_func is None:
+            raise ValueError("Single heuristic is not configured.")
+
+        # By default, apply the base topological mask (cannot act on oneself)
+        mask = torch.ones(batch_size, num_nodes, device=self.device, dtype=torch.bool)
+        mask.scatter_(1, node_pos.long(), False)
+
+        if heuristic_func is swap:
+            # For a 'swap' between source node (A) and target node (B):
+            # Load Route A' = Load Route A - Demand A + Demand B
+            # Load Route B' = Load Route B - Demand B + Demand A
+
+            # Calculate potential new loads for source and target routes
+            new_load_for_source_route = (
+                source_route_load - source_demand + target_demands
+            )
+            new_load_for_target_route = (
+                target_route_loads - target_demands + source_demand
+            )
+
+            # Check validity
+            source_route_ok = new_load_for_source_route <= self.capacity
+            target_route_ok = new_load_for_target_route <= self.capacity
+
+            # If the swap is intra-route, the total load doesn't change,
+            # so it's always valid
+            is_intra_route = source_route_id == target_route_ids
+
+            # An action is valid if (it's intra-route) OR
+            # (both new routes respect capacity)
+            capacity_mask = torch.where(
+                is_intra_route, torch.ones_like(mask), source_route_ok & target_route_ok
+            )
+            mask &= capacity_mask
+
+            # Cannot swap with the depot
+            mask &= ~is_depot_mask
+
+        elif heuristic_func is insertion:
+            # For an 'insertion' of source node (A) into the route of target node (B):
+            # Route A is lightened (always valid).
+            # Route B is heavier: Load Route B' = Load Route B + Demand A
+
+            # This block handles a specific edge case where target_route_loads
+            # might be 0. It tries to get a valid load by looking at the next node.
+            batch_idx = torch.arange(batch_size, device=solution.device)
+            mask_rm = torch.ones_like(target_route_loads, dtype=torch.bool)
+            mask_rm[batch_idx, node_pos] = False
+
+            remaining_nodes_flat = target_route_loads[mask]
+            remaining_nodes = remaining_nodes_flat.view(batch_size, num_nodes - 1)
+
+            target_route_loads = torch.cat(
+                [
+                    remaining_nodes,
+                    torch.zeros(
+                        batch_size,
+                        1,
+                        device=self.device,
+                        dtype=target_route_loads.dtype,
+                    ),
+                ],
+                dim=1,
+            )
+
+            shifted_target_loads = torch.cat(
+                [
+                    target_route_loads[:, 1:],
+                    torch.zeros(
+                        batch_size,
+                        1,
+                        device=self.device,
+                        dtype=target_route_loads.dtype,
+                    ),
+                ],
+                dim=1,
+            )
+
+            adjusted_target_loads = torch.max(target_route_loads, shifted_target_loads)
+
+            new_load_for_target_route = adjusted_target_loads + source_demand
+            capacity_mask = new_load_for_target_route <= self.capacity
+
+            is_intra_route = source_route_id == target_route_ids
+
+            # Valid if (it's intra-route) OR
+            # (the new target route respects capacity)
+            capacity_mask = torch.where(
+                is_intra_route, torch.ones_like(mask), capacity_mask
+            )
+            mask &= capacity_mask
+
+            # Ensure the last value of each row is False
+            mask[:, -1] = False
+
+        elif heuristic_func is two_opt:
+            raise NotImplementedError(
+                "2-opt is not implemented for UPDATE_METHOD == 'two_opt'."
+            )
+
+        else:
+            raise NotImplementedError(
+                f"Masking for heuristic {heuristic_func.__name__} is not implemented."
+            )
+
+        # --- Final invalidation logic ---
+
+        # If source_demand, source_route_id, or source_route_load is 0,
+        # the source node is invalid (e.g., it's a depot or padding)
+        invalid_source = (
+            (source_demand == 0) | (source_route_id == 0) | (source_route_load == 0)
+        )
+
+        # If the entire mask row is False (no valid moves found),
+        # treat the source as invalid as well.
+        invalid_source |= ~mask.any(dim=1, keepdim=True)
+
+        # Create a mask that is only `True` at the source node's position.
+        # This is used as a "no-op" or "sentinel" action.
+        empty_mask = torch.zeros_like(mask, dtype=torch.bool)
+        source_only_mask = empty_mask.scatter(1, node_pos.long(), True)
+
+        # If the source was invalid, replace the calculated mask with the
+        # 'source_only_mask'. Otherwise, keep the calculated mask.
+        mask = torch.where(invalid_source, source_only_mask, mask)
+
+        return mask

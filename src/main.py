@@ -23,6 +23,7 @@ import numpy as np
 import torch
 from loguru import logger
 from tqdm import tqdm
+from torch.optim.lr_scheduler import ExponentialLR
 
 # --------------------------------
 # Import custom modules
@@ -69,6 +70,10 @@ logger.add(
     level="INFO",
 )
 
+import warnings
+
+warnings.filterwarnings("ignore", message="Attempting to run cuBLAS")
+
 # --------------------------------
 # Load and prepare configuration
 # --------------------------------
@@ -90,6 +95,7 @@ def log_training_and_test_metrics(
     lr_actor: float,
     beta_kl: float,
     entropy: float,
+    early_stopping_counter: int,
     test_results: Optional[Dict[str, torch.Tensor]],
     epoch: int,
     config: Dict[str, Any],
@@ -120,6 +126,7 @@ def log_training_and_test_metrics(
                 "LR_actor": lr_actor,
                 "Beta_KL": beta_kl,
                 "Entropy": entropy,
+                "early_stopping_counter": early_stopping_counter,
             }
         )
 
@@ -167,6 +174,7 @@ def train_ppo(
     critic: torch.nn.Module,
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizer: torch.optim.Optimizer,
+    critic_scheduler: torch.optim.lr_scheduler.ExponentialLR,  # Update scheduler type
     problem: CVRP,
     initial_solutions: torch.Tensor,
     config: Dict[str, Any],
@@ -185,6 +193,7 @@ def train_ppo(
         critic: Critic neural network
         actor_optimizer: Optimizer for actor network
         critic_optimizer: Optimizer for critic network
+        critic_scheduler: Learning rate scheduler for critic
         problem: CVRP problem instance
         initial_solutions: Initial solution tensor
         config: Configuration dictionary
@@ -200,6 +209,7 @@ def train_ppo(
     """
     # Clear GPU cache if using CUDA
     if problem.device == "cuda":
+        torch.cuda.init()
         torch.cuda.empty_cache()
 
     # Initialize experience replay buffer
@@ -229,6 +239,9 @@ def train_ppo(
         curr_epoch=step,
         cfg=config,
     )
+
+    # Step the learning rate scheduler for the critic
+    critic_scheduler.step()
 
     # Compute gradient statistics for monitoring
     actor_gradients = [
@@ -491,13 +504,17 @@ def initialize_models(
     logger.info(f"Actor model initialized: {actor.__class__.__name__}")
 
     # Initialize critic model
-    critic = CVRPCritic(
-        embed_dim=config["EMBEDDING_DIM"],
-        c=config["ENTRY"],
-        num_hidden_layers=config["NUM_H_LAYERS"],
-        device=device,
-        attention=(config["MODEL"] == "attention"),
-    )
+    if config["CRITIC_MODEL"] == "ff":
+        critic = CVRPCritic(
+            embed_dim=config["EMBEDDING_DIM"],
+            c=config["ENTRY"],
+            num_hidden_layers=config["NUM_H_LAYERS"],
+            device=device,
+        )
+    else:
+        raise ValueError(
+            f"Unknown critic model type specified: {config['CRITIC_MODEL']}"
+        )
     logger.info("Critic model initialized")
 
     return actor, critic
@@ -543,6 +560,9 @@ def main(config: Dict[str, Any]) -> None:
         critic.parameters(), lr=config["LR_CRITIC"], weight_decay=config["WEIGHT_DECAY"]
     )
 
+    # Initialize learning rate scheduler for the critic
+    critic_scheduler = ExponentialLR(critic_optimizer, gamma=0.98)  # Smooth decay
+
     logger.info("Training initialization completed")
 
     # Perform initial test to establish baseline
@@ -584,6 +604,7 @@ def main(config: Dict[str, Any]) -> None:
                 critic=critic,
                 actor_optimizer=actor_optimizer,
                 critic_optimizer=critic_optimizer,
+                critic_scheduler=critic_scheduler,  # Pass scheduler
                 problem=training_problem,
                 initial_solutions=initial_training_solutions,
                 config=config,
@@ -610,10 +631,22 @@ def main(config: Dict[str, Any]) -> None:
                 )
                 current_test_loss = torch.mean(test_results["min_cost"])
 
+                print(torch.mean(test_results["is_valid"]))
+
                 if config["REWARD_LAST"]:
                     config["REWARD_LAST_SCALE"] = min(
                         config["REWARD_LAST_SCALE"] + config["REWARD_LAST_ADD"], 100
                     )
+
+            # Early stopping logic
+            if epoch % 10 == 0:
+                if current_test_loss.item() >= best_loss_value:
+                    early_stopping_counter += 1
+                    if config["VERBOSE"]:
+                        logger.info(f"Early stopping counter: {early_stopping_counter}")
+                else:
+                    early_stopping_counter = 0
+                    best_loss_value = min(current_test_loss.item(), best_loss_value)
 
             # Log metrics to WandB
             if config["LOG"]:
@@ -626,6 +659,7 @@ def main(config: Dict[str, Any]) -> None:
                     lr_actor=lr_actor,
                     beta_kl=beta_kl,
                     entropy=avg_entropy,
+                    early_stopping_counter=early_stopping_counter,
                     test_results=(
                         test_results if (epoch >= 10) else initial_test_results
                     ),
@@ -644,23 +678,13 @@ def main(config: Dict[str, Any]) -> None:
                     model_name=model_name,
                 )
 
-            # Early stopping logic
-            if epoch % 10 == 0:
-                if current_test_loss.item() >= best_loss_value:
-                    early_stopping_counter += 1
-                    if config["VERBOSE"]:
-                        logger.info(f"Early stopping counter: {early_stopping_counter}")
-                else:
-                    early_stopping_counter = 0
-                    best_loss_value = min(current_test_loss.item(), best_loss_value)
-
-                # Trigger early stopping if no improvement for too long
-                if early_stopping_counter > 5:
-                    logger.warning(
-                        f"Early stopping triggered at epoch {epoch} "
-                        f"with loss {best_loss_value:.4f}"
-                    )
-                    break
+            # Trigger early stopping if no improvement for too long
+            if early_stopping_counter > 25:
+                logger.warning(
+                    f"Early stopping triggered at epoch {epoch} "
+                    f"with loss {best_loss_value:.4f}"
+                )
+                break
 
             # Update progress bar
             progress_bar.set_description(

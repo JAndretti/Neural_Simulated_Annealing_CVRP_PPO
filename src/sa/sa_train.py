@@ -439,7 +439,7 @@ def sa_train(
                 tracking["state_history"].append(current_state)
 
             # Generate action from policy
-            action, action_log_prob = generate_action(
+            action, action_log_prob, mask = generate_action(
                 actor,
                 current_state,
                 baseline,
@@ -541,6 +541,7 @@ def sa_train(
             if replay_buffer is not None:
                 replay_buffer.push(
                     current_state,
+                    mask,
                     action,
                     next_state,
                     tracking["reward_signal"],

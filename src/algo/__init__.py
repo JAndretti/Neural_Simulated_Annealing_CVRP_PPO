@@ -16,6 +16,7 @@ from .generate_uchoa import P_generate_instances, stack_res
 
 from .local_heuristics import swap, two_opt, insertion
 
+
 __all__ = [
     "or_tools",
     "test_or_tools",

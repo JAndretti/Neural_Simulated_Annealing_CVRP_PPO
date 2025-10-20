@@ -226,6 +226,47 @@ def is_feasible(
     device = solution.device
 
     mask = solution.squeeze(-1) != 0  # [batch, route_length]
+    segment_start = mask & ~torch.cat(
+        [torch.zeros_like(mask[:, :1]), mask[:, :-1]], dim=1
+    )
+    segment_ids = torch.cumsum(segment_start, 1) * mask
+    num_routes = segment_ids.max() + 1
+
+    route_loads = torch.zeros(
+        batch_size,
+        num_routes,
+        device=device,
+        dtype=demands.dtype,
+    )
+    route_loads.scatter_add_(1, segment_ids, demands)
+
+    # Check if any route demand exceeds capacity
+    feasible = (route_loads <= capacity).all(dim=1)
+    start_w_depot = solution[:, 0, 0] == 0
+    end_w_depot = solution[:, -1, 0] == 0
+    feasible = feasible & start_w_depot & end_w_depot
+
+    return feasible
+
+
+def is_feasible2(
+    solution: torch.Tensor, demands: torch.Tensor, capacity: torch.Tensor
+) -> torch.Tensor:
+    """
+    Check if the solution respects capacity constraints for all routes.
+
+    Args:
+        solution: Tensor [batch, route_length, 1] representing routes
+        demands: Tensor [batch, route_length] with demands for each client (0 for depot)
+        capacity: Tensor [batch] with vehicle capacities for each problem instance
+
+    Returns:
+        Tensor [batch] of boolean values indicating feasibility for each problem
+    """
+    batch_size = solution.size(0)
+    device = solution.device
+
+    mask = solution.squeeze(-1) != 0  # [batch, route_length]
 
     # Identify route starts: True where a route starts (depot->client)
     route_starts = torch.cat(

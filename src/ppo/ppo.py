@@ -71,6 +71,7 @@ def run_ppo_training_epochs(
     actor_opt,
     critic_opt,
     state,
+    mask,
     action,
     old_log_probs,
     advantages,
@@ -128,6 +129,7 @@ def run_ppo_training_epochs(
 
             # --- Retrieve mini-batch data ---
             batch_state = state[minibatch_indices]
+            batch_mask = mask[minibatch_indices]
             batch_action = action[minibatch_indices]
             batch_advantages = advantages[minibatch_indices]
             batch_returns = returns[minibatch_indices]
@@ -136,7 +138,7 @@ def run_ppo_training_epochs(
 
             # --- Current evaluation of actor and critic ---
             batch_state_values = critic(batch_state).squeeze()
-            batch_log_probs = actor.evaluate(batch_state, batch_action)
+            batch_log_probs = actor.evaluate(batch_state, batch_action, batch_mask)
 
             # Gradients must be zeroed for each mini-batch
             actor_opt.zero_grad()
@@ -316,6 +318,7 @@ def ppo(
         state = (
             torch.stack(batch.state).view(nt, n_problems, problem_dim, -1).to(device)
         )
+        mask = torch.stack(batch.mask).view(nt, n_problems, -1).to(device)
         action = torch.stack(batch.action).view(nt, n_problems, -1).to(device)
         next_state = (
             torch.stack(batch.next_state)
@@ -361,6 +364,7 @@ def ppo(
     # The final size for all tensors will be (nt * n_problems, ...)
 
     state = state.view(nt * n_problems, problem_dim, -1)
+    mask = mask.view(nt * n_problems, -1)
     action = action.view(nt * n_problems, -1)
     old_log_probs = old_log_probs.view(nt * n_problems, -1)
     advantages = advantages.view(nt * n_problems)
@@ -380,6 +384,7 @@ def ppo(
         actor_opt,
         critic_opt,
         state,
+        mask,
         action,
         old_log_probs,
         advantages,

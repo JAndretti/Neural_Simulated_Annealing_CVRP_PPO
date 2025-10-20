@@ -67,7 +67,7 @@ def sa_baseline(
     current_cost = best_cost.clone()
 
     # Action
-    if config["UPDATE_METHOD"] == "free":
+    if config["UPDATE_METHOD"] == "free" or config["UPDATE_METHOD"] == "valid":
         shape_action = best_solution.shape[1]
     elif config["UPDATE_METHOD"] == "rm_depot":
         shape_action = problem.dim

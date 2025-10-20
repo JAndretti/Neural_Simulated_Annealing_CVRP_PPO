@@ -7,6 +7,7 @@ Transition = namedtuple(
     "Transition",
     (
         "state",
+        "mask",
         "action",
         "next_state",
         "reward",
@@ -41,6 +42,7 @@ class ReplayBuffer:
     def push(
         self,
         state: torch.Tensor,
+        mask: torch.Tensor,
         action: torch.Tensor,
         next_state: torch.Tensor,
         reward: torch.Tensor,
@@ -52,8 +54,8 @@ class ReplayBuffer:
 
         Args:
             state: Current state tensor
+            mask: Validity mask tensor (e.g., for invalid actions)
             action: Action tensor
-            temp_features: Temperature features tensor
             next_state: Next state tensor
             reward: Reward tensor (shape: [batch_size, 1])
             old_log_probs: Log probabilities of actions
@@ -63,6 +65,7 @@ class ReplayBuffer:
         # Detach and clone to prevent memory leaks
         transition = Transition(
             state.detach().clone().to(self.device),
+            mask.detach().clone().to(self.device),
             action.detach().clone().to(self.device),
             next_state.detach().clone().to(self.device),
             reward.detach().clone().to(self.device),

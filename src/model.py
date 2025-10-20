@@ -416,13 +416,13 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, greedy: bool = False, train: bool = False, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample an action pair from the current state."""
-        c1_state, n_problems = self._prepare_features_city1(state)
+        problem = kwargs.get("problem", None)
+        c1_state, n_problems, x = self._prepare_features_city1(state)
 
         logits = self.city1_net(c1_state)[..., 0]
-
-        if not train:
-            temp = 0.5
-            logits /= temp
+        if self.method != "rm_depot":
+            mask = (x != 0).squeeze(-1)
+            logits[~mask] = -float("inf")  # Mask logits where x == 0
 
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
@@ -432,9 +432,17 @@ class CVRPActor(SAModel):
 
         # City 2 net
         logits = self.city2_net(c2_state)[..., 0]
-
-        if not train:
-            logits /= temp
+        mask = torch.ones_like(logits, dtype=torch.bool)
+        if self.method == "valid":
+            mask = problem.get_action_mask(x, c1)
+            logits[~mask] = -float("inf")  # Mask invalid actions
+        elif self.method == "free":
+            arange = torch.arange(n_problems).to(logits.device)
+            logits[~mask] = -float("inf")  # Mask logits where x == 0
+            logits[arange, c1] = -float("inf")
+        else:
+            arange = torch.arange(n_problems).to(logits.device)
+            logits[arange, c1] = -float("inf")
 
         c2, log_probs_c2 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
@@ -455,13 +463,13 @@ class CVRPActor(SAModel):
             action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
 
         log_probs = log_probs_c1 + log_probs_c2
-        return action, log_probs[..., 0]
+        return action, log_probs[..., 0], mask
 
     def evaluate(
-        self, state: torch.Tensor, action: torch.Tensor, **kwargs
+        self, state: torch.Tensor, action: torch.Tensor, mask: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Evaluate log probabilities of given actions."""
-        c1_state, n_problems = self._prepare_features_city1(state)
+        c1_state, n_problems, x = self._prepare_features_city1(state)
 
         c1 = action[:, 0]
         if self.mixed_heuristic:
@@ -476,6 +484,11 @@ class CVRPActor(SAModel):
 
         # City 1 net
         logits = self.city1_net(c1_state)[..., 0]
+
+        if self.method != "rm_depot":
+            tmp_mask = (x != 0).squeeze(-1)
+            logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
+
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs.gather(1, c1.view(-1, 1)))
 
@@ -485,6 +498,15 @@ class CVRPActor(SAModel):
 
         # City 2 net
         logits = self.city2_net(c2_state)[..., 0]
+        if self.method == "valid":
+            logits[~mask] = -float("inf")  # Mask invalid actions
+        elif self.method == "free":
+            arange = torch.arange(n_problems).to(logits.device)
+            logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
+            logits[arange, c1] = -float("inf")
+        else:
+            arange = torch.arange(n_problems).to(logits.device)
+            logits[arange, c1] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs.gather(1, c2.view(-1, 1)))
 
@@ -518,7 +540,7 @@ class CVRPActor(SAModel):
         if self.method == "rm_depot":
             mask = x.squeeze(-1) != 0
             c_state = c_state[mask].view(n_problems, -1, c_state.size(-1))
-        return c_state, n_problems
+        return c_state, n_problems, x
 
     def _prepare_features_city2(
         self, c1_state: torch.Tensor, c1: torch.Tensor, n_problems: int
@@ -556,7 +578,6 @@ class CVRPCritic(nn.Module):
         c: int = 13,
         num_hidden_layers: int = 2,
         device: str = "cpu",
-        attention: bool = True,
     ) -> None:
         super().__init__()
         self.q_func = create_network(
@@ -566,7 +587,6 @@ class CVRPCritic(nn.Module):
             device=device,
         )
         self.q_func.apply(self.init_weights)
-        self.attention = attention
 
     @staticmethod
     def init_weights(m: nn.Module) -> None:
@@ -583,14 +603,6 @@ class CVRPCritic(nn.Module):
         x, coords, *extra_features = torch.split(
             state, [1, 2] + [1] * num_extra_features, dim=-1
         )
-
-        if self.attention:
-            # Remove the last column of extra_features and store it in routes_ids
-            *extra_features, _ = (
-                extra_features[:-1],
-                extra_features[-1],
-            )
-            extra_features = extra_features[0]
 
         # Gather current, previous and next coordinates
         coords = coords.gather(1, x.long().expand_as(coords))

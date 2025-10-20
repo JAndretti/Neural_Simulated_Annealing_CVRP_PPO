@@ -15,7 +15,7 @@ from func import (
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from sa import sa_test, sa_baseline
+from sa import sa_train, sa_baseline
 from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 from loguru import logger  # Enhanced logging capabilities
@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "HEUR"
+FOLDER = "METHODS"
 rapid = False  # Set to True for faster execution, False for full evaluation
 dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
@@ -89,7 +89,6 @@ cfg = {
     "LOAD_PB": False if rapid else True,
     "INIT": "random",
     "MULTI_INIT": False,
-    "UPDATE_METHOD": "free",
 }
 cfg["MAX_LOAD"] = 50 if cfg["PROBLEM_DIM"] == 100 else 40
 
@@ -137,7 +136,7 @@ def perform_test(
     problem.set_heuristic(HP["HEURISTIC"])
     problem.params = HP
     # Initialize models
-    if HP["PAIRS"]:
+    if HP["MODEL"] == "pairs":
         actor = CVRPActorPairs(
             embed_dim=HP["EMBEDDING_DIM"],
             c=HP["ENTRY"],
@@ -146,7 +145,7 @@ def perform_test(
             mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
             method=HP["UPDATE_METHOD"],
         )
-    else:
+    elif HP["MODEL"] == "seq":
         actor = CVRPActor(
             embed_dim=HP["EMBEDDING_DIM"],
             c=HP["ENTRY"],
@@ -161,7 +160,7 @@ def perform_test(
     # Run simulated annealing with time measurement
     start_time = time.time()
 
-    test = sa_test(
+    test = sa_train(
         actor,
         problem,
         init_x,
