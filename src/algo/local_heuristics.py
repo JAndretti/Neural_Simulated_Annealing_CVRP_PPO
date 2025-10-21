@@ -54,60 +54,6 @@ def two_opt(x: torch.Tensor, a: torch.Tensor):
     return torch.gather(x, 1, idx.unsqueeze(-1))
 
 
-# def insertion(solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-#     """
-#     Move a node to a new position in the solution.
-
-#     Args:
-#         solution: Tensor [batch, route_length, 1]
-#         indices: Tensor [batch, 2] -> (node_position, new_position)
-
-#     Returns:
-#         Modified solution tensor
-#     """
-#     batch_size, route_length, _ = solution.shape
-#     device = solution.device
-
-#     # Remove last dimension and ensure proper type
-#     solution = solution.squeeze(-1)
-#     node_pos = indices[:, 0]
-#     new_pos = indices[:, 1].clamp(0, route_length - 1)
-
-#     # Create batch indices [0, 1, ..., batch_size-1]
-#     batch_idx = torch.arange(batch_size, device=device)
-
-#     # Create mask for all elements except the ones to move
-#     mask = torch.ones_like(solution, dtype=torch.bool)
-#     mask[batch_idx, node_pos] = False
-
-#     # Get remaining nodes after removing the moved ones
-#     remaining_nodes = solution[mask].view(batch_size, route_length - 1)
-
-#     # Create new solution tensor with proper dtype
-#     new_solution = torch.zeros(
-#         batch_size, route_length, dtype=solution.dtype, device=device
-#     )
-
-#     # Create position ranges
-#     pos_range = torch.arange(route_length, device=device).expand(batch_size, -1)
-
-#     # Build the new solution by scattering
-#     # For positions before new_pos, take from remaining_nodes
-#     new_solution[pos_range < new_pos.unsqueeze(1)] = remaining_nodes[
-#         :, : route_length - 1
-#     ][pos_range[:, : route_length - 1] < new_pos.unsqueeze(1)]
-
-#     # For positions after new_pos, take from remaining_nodes offset by 1
-#     new_solution[pos_range > new_pos.unsqueeze(1)] = remaining_nodes[
-#         :, : route_length - 1
-#     ][pos_range[:, : route_length - 1] >= new_pos.unsqueeze(1)]
-
-#     # Insert the moved nodes at their new positions
-#     new_solution[batch_idx, new_pos] = solution[batch_idx, node_pos]
-
-#     return new_solution.unsqueeze(-1)
-
-
 def insertion(solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
     """
     Move a node to a new position in the solution.
@@ -121,9 +67,6 @@ def insertion(solution: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
     """
     batch_size, route_length, _ = solution.shape
     device = solution.device
-
-    # Adjust indices[1] if indices[0] < indices[1]
-    indices[:, 1] -= (indices[:, 0] < indices[:, 1]).long()
 
     # Remove last dimension and ensure proper type
     solution = solution.squeeze(-1)

@@ -631,8 +631,6 @@ def main(config: Dict[str, Any]) -> None:
                 )
                 current_test_loss = torch.mean(test_results["min_cost"])
 
-                print(torch.mean(test_results["is_valid"]))
-
                 if config["REWARD_LAST"]:
                     config["REWARD_LAST_SCALE"] = min(
                         config["REWARD_LAST_SCALE"] + config["REWARD_LAST_ADD"], 100

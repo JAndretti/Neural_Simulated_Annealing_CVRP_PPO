@@ -665,10 +665,20 @@ class CVRP(Problem):
         valid = (
             is_feasible(sol, new_ordered_demands, self.capacity).unsqueeze(-1).long()
         )
-        # Update self.ordered_demands if the solution is valid
-        self.ordered_demands = torch.where(
-            valid == 1, new_ordered_demands, self.ordered_demands
-        )
+
+        # Return original solution if modified solution is infeasible
+        sol = torch.where(valid.unsqueeze(-1) == 1, sol, solution).to(torch.int64)
+
+        return sol, valid
+
+    def update_tensor(self, solution: torch.Tensor):
+        """
+        Update internal tensors based on current solution.
+        Args:
+            solution: The current solution, shape [batch, num_nodes, 1].
+        """
+        # Update internal tensors based on new solution
+        self.ordered_demands = self.get_demands(solution)
         # Identify route segments
         self.mask = self.ordered_demands != 0
         segment_start = self.mask & ~torch.cat(
@@ -677,11 +687,6 @@ class CVRP(Problem):
 
         # Compute segment demands
         self.segment_ids = torch.cumsum(segment_start, 1) * self.mask
-
-        # Return original solution if modified solution is infeasible
-        sol = torch.where(valid.unsqueeze(-1) == 1, sol, solution).to(torch.int64)
-
-        return sol, valid
 
     def _get_current_route_loads(self) -> torch.Tensor:
         """
@@ -750,7 +755,7 @@ class CVRP(Problem):
 
         # By default, apply the base topological mask (cannot act on oneself)
         mask = torch.ones(batch_size, num_nodes, device=self.device, dtype=torch.bool)
-        mask.scatter_(1, node_pos.long(), False)
+        # mask.scatter_(1, node_pos.long(), False)
 
         if heuristic_func is swap:
             # For a 'swap' between source node (A) and target node (B):
@@ -790,12 +795,11 @@ class CVRP(Problem):
 
             # This block handles a specific edge case where target_route_loads
             # might be 0. It tries to get a valid load by looking at the next node.
-            batch_idx = torch.arange(batch_size, device=solution.device)
-            mask_rm = torch.ones_like(target_route_loads, dtype=torch.bool)
-            mask_rm[batch_idx, node_pos] = False
-
-            remaining_nodes_flat = target_route_loads[mask]
-            remaining_nodes = remaining_nodes_flat.view(batch_size, num_nodes - 1)
+            mask = torch.ones_like(target_route_loads, dtype=torch.bool)
+            batch_idx = torch.arange(target_route_loads.shape[0]).unsqueeze(-1)
+            mask[batch_idx, node_pos] = False
+            output_flat = target_route_loads[mask]
+            remaining_nodes = output_flat.reshape(target_route_loads.shape[0], -1)
 
             target_route_loads = torch.cat(
                 [
@@ -809,16 +813,10 @@ class CVRP(Problem):
                 ],
                 dim=1,
             )
-
             shifted_target_loads = torch.cat(
                 [
-                    target_route_loads[:, 1:],
-                    torch.zeros(
-                        batch_size,
-                        1,
-                        device=self.device,
-                        dtype=target_route_loads.dtype,
-                    ),
+                    target_route_loads[:, 1].unsqueeze(-1),
+                    target_route_loads[:, :-1],
                 ],
                 dim=1,
             )
@@ -837,8 +835,9 @@ class CVRP(Problem):
             )
             mask &= capacity_mask
 
-            # Ensure the last value of each row is False
+            # Ensure the last and first value of each row is False
             mask[:, -1] = False
+            mask[:, 0] = False
 
         elif heuristic_func is two_opt:
             raise NotImplementedError(

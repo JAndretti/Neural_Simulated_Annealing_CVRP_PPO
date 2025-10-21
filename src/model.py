@@ -420,9 +420,9 @@ class CVRPActor(SAModel):
         c1_state, n_problems, x = self._prepare_features_city1(state)
 
         logits = self.city1_net(c1_state)[..., 0]
-        if self.method != "rm_depot":
-            mask = (x != 0).squeeze(-1)
-            logits[~mask] = -float("inf")  # Mask logits where x == 0
+        # if self.method != "rm_depot":
+        mask = (x != 0).squeeze(-1)
+        logits[~mask] = -float("inf")  # Mask logits where x == 0
 
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
@@ -436,10 +436,6 @@ class CVRPActor(SAModel):
         if self.method == "valid":
             mask = problem.get_action_mask(x, c1)
             logits[~mask] = -float("inf")  # Mask invalid actions
-        elif self.method == "free":
-            arange = torch.arange(n_problems).to(logits.device)
-            logits[~mask] = -float("inf")  # Mask logits where x == 0
-            logits[arange, c1] = -float("inf")
         else:
             arange = torch.arange(n_problems).to(logits.device)
             logits[arange, c1] = -float("inf")
@@ -485,9 +481,9 @@ class CVRPActor(SAModel):
         # City 1 net
         logits = self.city1_net(c1_state)[..., 0]
 
-        if self.method != "rm_depot":
-            tmp_mask = (x != 0).squeeze(-1)
-            logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
+        # if self.method != "rm_depot":
+        tmp_mask = (x != 0).squeeze(-1)
+        logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
 
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs.gather(1, c1.view(-1, 1)))
@@ -500,19 +496,11 @@ class CVRPActor(SAModel):
         logits = self.city2_net(c2_state)[..., 0]
         if self.method == "valid":
             logits[~mask] = -float("inf")  # Mask invalid actions
-        elif self.method == "free":
-            arange = torch.arange(n_problems).to(logits.device)
-            logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
-            logits[arange, c1] = -float("inf")
         else:
             arange = torch.arange(n_problems).to(logits.device)
             logits[arange, c1] = -float("inf")
         probs = torch.softmax(logits, dim=-1)
         log_probs_c2 = torch.log(probs.gather(1, c2.view(-1, 1)))
-
-        # Print the logit of c2 if it is -inf
-        if torch.any(logits[torch.arange(n_problems), c2] == -float("inf")):
-            print("Logits of c2 contain -inf:", logits[torch.arange(n_problems), c2])
 
         # Construct log-probabilities and return
         log_probs = log_probs_c1 + log_probs_c2

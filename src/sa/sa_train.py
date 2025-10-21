@@ -351,6 +351,9 @@ def update_temperature_and_state(
     # Normalize temperature for state representation
     model_next_temp = scale_to_unit(next_temp, config["STOP_TEMP"], config["INIT_TEMP"])
 
+    # Update problem's internal tensor representations
+    problem.update_tensor(current_solution)
+
     # Build next state
     next_state = problem.to_state(
         *problem.build_state_components(current_solution, model_next_temp, adv)
