@@ -88,12 +88,17 @@ def init_pb(
     problem = CVRP(
         cfg["PROBLEM_DIM"],
         cfg["N_PROBLEMS"],
-        capacities if capacities is not None else cfg["MAX_LOAD"],
+        capacities[: cfg["N_PROBLEMS"]] if capacities is not None else cfg["MAX_LOAD"],
         device=cfg["DEVICE"],
         params=cfg,
     )
     problem.manual_seed(cfg["SEED"])
-    problem.generate_params("test", cfg["LOAD_PB"], coords, demands)
+    problem.generate_params(
+        "test",
+        cfg["LOAD_PB"],
+        coords[: cfg["N_PROBLEMS"]],
+        demands[: cfg["N_PROBLEMS"]],
+    )
     init_x = problem.generate_init_state(cfg["INIT"])
     initial_cost = torch.mean(problem.cost(init_x))
     return problem, init_x, initial_cost

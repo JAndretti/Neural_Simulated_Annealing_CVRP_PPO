@@ -15,7 +15,7 @@ from func import (
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from sa import sa_train, sa_baseline
+from sa import sa_train
 from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 from loguru import logger  # Enhanced logging capabilities
@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore")
 
 # TO FILL
 ###########################################################################
-FOLDER = "METHODS"
+FOLDER = "dd"
 rapid = False  # Set to True for faster execution, False for full evaluation
 dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
 ###########################################################################
@@ -77,9 +77,9 @@ else:
 
 # Configuration
 cfg = {
-    "PROBLEM_DIM": 50 if rapid else coords.shape[1] - 1,
-    "N_PROBLEMS": 1000 if rapid else capacities.shape[0],
-    "OUTER_STEPS": 1000 if rapid else 10000,
+    "PROBLEM_DIM": 50 if rapid else 1000,
+    "N_PROBLEMS": 100 if rapid else 1000,
+    "OUTER_STEPS": 100 if rapid else 10000,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
@@ -90,7 +90,9 @@ cfg = {
     "INIT": "random",
     "MULTI_INIT": False,
 }
-cfg["MAX_LOAD"] = 50 if cfg["PROBLEM_DIM"] == 100 else 40
+
+tmp_dict = {100: 50, 50: 40, 20: 30, 10: 20}
+cfg["MAX_LOAD"] = tmp_dict.get(cfg["PROBLEM_DIM"], 40)
 
 
 def initialize_results_df(columns: list):
@@ -142,7 +144,7 @@ def perform_test(
             c=HP["ENTRY"],
             num_hidden_layers=HP["NUM_H_LAYERS"],
             device=HP["DEVICE"],
-            mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
+            mixed_heuristic=True if len(HP["HEURISTIC"]) > 1 else False,
             method=HP["UPDATE_METHOD"],
         )
     elif HP["MODEL"] == "seq":
@@ -151,7 +153,7 @@ def perform_test(
             c=HP["ENTRY"],
             num_hidden_layers=HP["NUM_H_LAYERS"],
             device=HP["DEVICE"],
-            mixed_heuristic=True if HP["HEURISTIC"] == "mix" else False,
+            mixed_heuristic=True if len(HP["HEURISTIC"]) > 1 else False,
             method=HP["UPDATE_METHOD"],
         )
     # Load model
@@ -178,11 +180,15 @@ def perform_test(
     HP["OUTER_STEPS"] *= 20
     step_baseline = HP["OUTER_STEPS"]
     start_time = time.time()
-    test_baseline = sa_baseline(
+    test_baseline = sa_train(
+        actor,
         problem,
         init_x,
         HP,
-        desc_tqdm="SA Baseline",
+        replay_buffer=None,
+        baseline=True,
+        greedy=False,
+        desc_tqdm="NSA Model",
     )
     execution_time_baseline = time.time() - start_time
     HP["OUTER_STEPS"] = step

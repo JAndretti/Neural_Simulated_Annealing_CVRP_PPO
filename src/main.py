@@ -407,7 +407,8 @@ def initialize_test_problem(
         )
         demands[:, 0] = 0
         # Set capacity for all problems
-        capacity = 50 if test_dim == 100 else 40
+        dict_capacity = {20: 30, 50: 40, 100: 50}
+        capacity = dict_capacity.get(test_dim, 50)
         capacities = torch.full((n_test_problems, 1), capacity, device=device)
     else:
         problem_path = f"generated_problem/gen{test_dim}.pt"
@@ -677,7 +678,7 @@ def main(config: Dict[str, Any]) -> None:
                 )
 
             # Trigger early stopping if no improvement for too long
-            if early_stopping_counter > 25:
+            if early_stopping_counter > 15:
                 logger.warning(
                     f"Early stopping triggered at epoch {epoch} "
                     f"with loss {best_loss_value:.4f}"

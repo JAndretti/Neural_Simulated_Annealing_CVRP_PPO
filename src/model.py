@@ -384,14 +384,17 @@ class CVRPActor(SAModel):
         self, state: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, None]:
         """Generate baseline sample using uniform probabilities."""
+        problem = kwargs.get("problem", None)
         n_problems, problem_dim, _ = state.shape
         x = state[:, :, 0]
-
+        mask = x.squeeze(-1) != 0
         # Sample c1 at random
         if self.method == "rm_depot":
-            mask = x.squeeze(-1) != 0
             x = x[mask].view(n_problems, -1)
-        logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
+            logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
+        else:
+            logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
+            logits[~mask] = -float("inf")  # Mask logits where x == 0
         c1, _ = self.sample_from_logits(logits, one_hot=False)
 
         # sample c2
@@ -408,9 +411,17 @@ class CVRPActor(SAModel):
                 dim=-1,
             )
         else:
+            logits = torch.ones(n_problems, x.shape[1]).to(self.generator.device)
+            mask = torch.ones_like(logits, dtype=torch.bool)
+            if self.method == "valid":
+                mask = problem.get_action_mask(x.unsqueeze(-1), c1)
+                logits[~mask] = -float("inf")  # Mask invalid actions
+            else:
+                arange = torch.arange(n_problems).to(logits.device)
+                logits[arange, c1] = -float("inf")
             c2, _ = self.sample_from_logits(logits, one_hot=False)
             action = torch.cat([c1.view(-1, 1).long(), c2.view(-1, 1).long()], dim=-1)
-        return action, None
+        return action, None, mask
 
     def sample(
         self, state: torch.Tensor, greedy: bool = False, train: bool = False, **kwargs
@@ -420,9 +431,9 @@ class CVRPActor(SAModel):
         c1_state, n_problems, x = self._prepare_features_city1(state)
 
         logits = self.city1_net(c1_state)[..., 0]
-        # if self.method != "rm_depot":
-        mask = (x != 0).squeeze(-1)
-        logits[~mask] = -float("inf")  # Mask logits where x == 0
+        if self.method != "rm_depot":
+            mask = (x != 0).squeeze(-1)
+            logits[~mask] = -float("inf")  # Mask logits where x == 0
 
         c1, log_probs_c1 = self.sample_from_logits(logits, greedy=greedy, one_hot=False)
 
@@ -481,9 +492,9 @@ class CVRPActor(SAModel):
         # City 1 net
         logits = self.city1_net(c1_state)[..., 0]
 
-        # if self.method != "rm_depot":
-        tmp_mask = (x != 0).squeeze(-1)
-        logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
+        if self.method != "rm_depot":
+            tmp_mask = (x != 0).squeeze(-1)
+            logits[~tmp_mask] = -float("inf")  # Mask logits where x == 0
 
         probs = torch.softmax(logits, dim=-1)
         log_probs_c1 = torch.log(probs.gather(1, c1.view(-1, 1)))
@@ -604,8 +615,7 @@ class CVRPCritic(nn.Module):
         state = torch.cat([coords, coords_prev, coords_next] + extra_features, -1)
 
         q_values = self.q_func(state).view(n_problems, problem_dim)
-        return q_values.mean(dim=-1)
 
-    def reset_weights(self):
-        """Reset the weights of the critic network."""
-        self.q_func.apply(self.init_weights)
+        q_values = q_values.mean(dim=-1)
+
+        return q_values
