@@ -395,23 +395,20 @@ def initialize_test_problem(
     n_test_problems = config["TEST_NB_PROBLEMS"]
 
     if config["NAZARI"]:
-        # Generate coordinates (depot + customers)
-        coordinates = torch.rand(n_test_problems, test_dim + 1, 2, device=device)
+        path = f"generated_nazari_problem/gen_nazari_{test_dim}.pt"
 
-        # Generate demands (depot has 0 demand, customers have demand 1-9)
-        demands = torch.randint(
-            1,
-            10,
-            (n_test_problems, test_dim + 1),
-            device=device,
-        )
-        demands[:, 0] = 0
-        # Set capacity for all problems
-        dict_capacity = {20: 30, 50: 40, 100: 50}
-        capacity = dict_capacity.get(test_dim, 50)
-        capacities = torch.full((n_test_problems, 1), capacity, device=device)
+        try:
+            test_data = torch.load(path, map_location="cpu")
+            logger.info(f"Loaded Nazari test data from: {path}")
+        except FileNotFoundError:
+            logger.error(f"Nazari test data file not found: {path}")
+            raise
+        coordinates = test_data["node_coords"][:n_test_problems].to(device)
+        demands = test_data["demands"][:n_test_problems].to(device)
+        capacities = test_data["capacity"][:n_test_problems].to(device)
+
     else:
-        problem_path = f"generated_problem/gen{test_dim}.pt"
+        problem_path = f"generated_problem/gen_uchoa_{test_dim}.pt"
         try:
             test_data = torch.load(problem_path, map_location="cpu")
             logger.info(f"Loaded test data from: {problem_path}")
@@ -445,10 +442,8 @@ def initialize_test_problem(
 
     # Generate initial solutions
     init_method = config["TEST_INIT"]
-    tmp = config["MULTI_INIT"]
-    config["MULTI_INIT"] = False  # Disable multi-init for test problem
-    initial_test_solutions = test_problem.generate_init_state(init_method)
-    config["MULTI_INIT"] = tmp  # Restore multi-init setting
+
+    initial_test_solutions = test_problem.generate_init_state(init_method, False)
 
     # Set heuristic method
     test_problem.set_heuristic(config["HEURISTIC"])
@@ -596,7 +591,7 @@ def main(config: Dict[str, Any]) -> None:
 
             # Generate initial solutions for training
             initial_training_solutions = training_problem.generate_init_state(
-                config["INIT"]
+                config["INIT"], config["MULTI_INIT"]
             )
 
             # Execute training step

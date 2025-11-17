@@ -5,6 +5,7 @@ import warnings
 import glob2
 import sys
 import time  # Add import for time measurement
+import argparse
 
 from func import (
     get_HP_for_model,
@@ -35,64 +36,80 @@ logger.add(
 
 # Suppress warnings if needed
 warnings.filterwarnings("ignore")
-
-# TO FILL
-###########################################################################
-FOLDER = "dd"
-rapid = False  # Set to True for faster execution, False for full evaluation
-dim = 100  # Problem dimension used for BDD if rapid is False [50, 100, 500, 1000]
-###########################################################################
-
-if dim not in [50, 100, 500, 1000]:
-    raise ValueError("Invalid problem dimension. Choose from [50, 100, 500, 1000].")
-
-if rapid:
-    logger.info("Running in rapid mode for quick evaluation.")
-else:
-    BDD_PATH = f"generated_problem/gen{dim}.pt"
-    logger.info(f"Running evaluation on {BDD_PATH}")
-
-# Constants
-BASE_PATH = "res/" + FOLDER + "/"
-if not os.path.exists(BASE_PATH):
-    os.makedirs(BASE_PATH, exist_ok=True)
-PATH = "wandb/Neural_Simulated_Annealing/"
-RESULTS_FILE_ALL_MODEL = BASE_PATH + (
-    "res_all_model_rapid.csv" if rapid else f"res_all_model_{dim}.csv"
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--INIT",
+    choices=["random", "isolate", "sweep", "nearest_neighbor", "Clark_and_Wright"],
+    default="random",
+    type=str,
+    help="Initialization method for CVRP",
 )
-RESULTS_FILE = (
-    BASE_PATH + "res_model_rapid.csv" if rapid else BASE_PATH + f"res_model_{dim}.csv"
+parser.add_argument(
+    "--dim",
+    default=100,
+    choices=[10, 20, 50, 100, 500, 1000],
+    type=int,
+    help="Problem dimension",
 )
-MODEL_NAMES = glob2.glob(os.path.join(PATH, FOLDER, "models", "*"))
-
-if not rapid:
-    bdd = torch.load(BDD_PATH, map_location="cpu")
-    coords = bdd["node_coords"]
-    demands = bdd["demands"]
-    capacities = bdd["capacity"]
-else:
-    coords = None
-    demands = None
-    capacities = None
+parser.add_argument(
+    "--FOLDER",
+    type=str,
+    help="Path to the trained model",
+)
+parser.add_argument(
+    "--OUTER_STEPS",
+    default=1000,
+    type=int,
+    help="Number of outer steps for the algorithm",
+)
+parser.add_argument(
+    "--DATA",
+    default="nazari",
+    choices=["nazari", "uchoa"],
+    type=str,
+    help="Dataset to use",
+)
+parser.add_argument(
+    "--BASELINE",
+    default=True,
+    type=bool,
+    help="Use baseline for comparison",
+)
 
 # Configuration
 cfg = {
-    "PROBLEM_DIM": 50 if rapid else 1000,
-    "N_PROBLEMS": 100 if rapid else 1000,
-    "OUTER_STEPS": 100 if rapid else 10000,
+    "PROBLEM_DIM": parser.parse_args().dim,
+    "N_PROBLEMS": 1000,
+    "OUTER_STEPS": parser.parse_args().OUTER_STEPS,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
         else "mps" if torch.backends.mps.is_available() else "cpu"
     ),
     "SEED": 0,
-    "LOAD_PB": False if rapid else True,
-    "INIT": "random",
+    "LOAD_PB": True,
+    "INIT": parser.parse_args().INIT,
     "MULTI_INIT": False,
+    "DATA": parser.parse_args().DATA,
+    "BASELINE": parser.parse_args().BASELINE,
 }
+set_seed(cfg["SEED"])
+# PATH and FOLDER setup
+FOLDER = parser.parse_args().FOLDER
+BASE_PATH = "res/" + FOLDER + "/"
+if not os.path.exists(BASE_PATH):
+    os.makedirs(BASE_PATH, exist_ok=True)
+PATH = "wandb/Neural_Simulated_Annealing/"
+RESULTS_FILE_ALL_MODEL = BASE_PATH + (f"res_all_model_{cfg['PROBLEM_DIM']}.csv")
+RESULTS_FILE = BASE_PATH + f"res_model_{cfg['PROBLEM_DIM']}.csv"
+MODEL_NAMES = glob2.glob(os.path.join(PATH, FOLDER, "models", "*"))
 
-tmp_dict = {100: 50, 50: 40, 20: 30, 10: 20}
-cfg["MAX_LOAD"] = tmp_dict.get(cfg["PROBLEM_DIM"], 40)
+PATH_DATA = f"generated_{cfg['DATA']}_problem/gen_{cfg['DATA']}_{cfg['PROBLEM_DIM']}.pt"
+indices = torch.randperm(cfg["N_PROBLEMS"], generator=torch.Generator())
+bdd = torch.load(PATH_DATA, map_location="cpu")
+coords = bdd["node_coords"][indices]
+demands = bdd["demands"][indices]
+capacities = bdd["capacity"][indices]
 
 
 def initialize_results_df(columns: list):
@@ -125,16 +142,45 @@ def load_results_models():
     return df
 
 
+def extract_differing_keys(model_names):
+    """Extract keys with differing values across HP.yaml files."""
+    all_hp_data = []
+    for model_name in model_names:
+        HP = get_HP_for_model(model_name)
+        if HP:
+            all_hp_data.append(HP)
+
+    differing_keys = set()
+    if all_hp_data:
+        keys = all_hp_data[0].keys()
+        for key in keys:
+            values = {
+                tuple(hp.get(key)) if isinstance(hp.get(key), list) else hp.get(key)
+                for hp in all_hp_data
+            }
+            if len(values) > 1:  # Key has differing values
+                differing_keys.add(key)
+    return differing_keys
+
+
+def add_hp_to_results(model_name, differing_keys):
+    """Extract HP values for the given model and return as a dictionary."""
+    HP = get_HP_for_model(model_name)
+    if not HP:
+        return {key: None for key in differing_keys}
+    return {key: HP.get(key, None) for key in differing_keys}
+
+
 def perform_test(
     model_name: str,
     problem: object,
     init_x: torch.Tensor,
+    baseline: bool = True,
 ):
     """Main execution function."""
     logger.info(f"Processing model: {model_name}")
     # init HP
     HP = init_problem_parameters(model_name, cfg)
-
     problem.set_heuristic(HP["HEURISTIC"])
     problem.params = HP
     # Initialize models
@@ -175,24 +221,29 @@ def perform_test(
     execution_time = time.time() - start_time
     init_cost = torch.mean(problem.cost(init_x))
     final_cost = torch.mean(test["min_cost"])
-
-    step = HP["OUTER_STEPS"]
-    HP["OUTER_STEPS"] *= 20
-    step_baseline = HP["OUTER_STEPS"]
-    start_time = time.time()
-    test_baseline = sa_train(
-        actor,
-        problem,
-        init_x,
-        HP,
-        replay_buffer=None,
-        baseline=True,
-        greedy=False,
-        desc_tqdm="NSA Model",
-    )
-    execution_time_baseline = time.time() - start_time
-    HP["OUTER_STEPS"] = step
-    final_cost_baseline = torch.mean(test_baseline["min_cost"])
+    if baseline:
+        step = HP["OUTER_STEPS"]
+        HP["OUTER_STEPS"] *= 20
+        step_baseline = HP["OUTER_STEPS"]
+        start_time = time.time()
+        test_baseline = sa_train(
+            actor,
+            problem,
+            init_x,
+            HP,
+            replay_buffer=None,
+            baseline=True,
+            greedy=False,
+            desc_tqdm="SA Baseline",
+        )
+        execution_time_baseline = time.time() - start_time
+        HP["OUTER_STEPS"] = step
+        final_cost_baseline = torch.mean(test_baseline["min_cost"])
+    else:
+        final_cost_baseline = None
+        execution_time_baseline = None
+        step_baseline = None
+        step = HP["OUTER_STEPS"]
     # Clear CUDA cache if using GPU
     if cfg["DEVICE"] == "cuda":
         torch.cuda.empty_cache()
@@ -207,37 +258,7 @@ def perform_test(
     )
 
 
-def extract_differing_keys(model_names):
-    """Extract keys with differing values across HP.yaml files."""
-    all_hp_data = []
-    for model_name in model_names:
-        HP = get_HP_for_model(model_name)
-        if HP:
-            all_hp_data.append(HP)
-
-    differing_keys = set()
-    if all_hp_data:
-        keys = all_hp_data[0].keys()
-        for key in keys:
-            values = {
-                tuple(hp.get(key)) if isinstance(hp.get(key), list) else hp.get(key)
-                for hp in all_hp_data
-            }
-            if len(values) > 1:  # Key has differing values
-                differing_keys.add(key)
-    return differing_keys
-
-
-def add_hp_to_results(model_name, differing_keys):
-    """Extract HP values for the given model and return as a dictionary."""
-    HP = get_HP_for_model(model_name)
-    if not HP:
-        return {key: None for key in differing_keys}
-    return {key: HP.get(key, None) for key in differing_keys}
-
-
 if __name__ == "__main__":
-    set_seed(cfg["SEED"])  # Set random seed for reproducibility
 
     # Extract keys with differing values across HP.yaml files
     differing_keys = extract_differing_keys(MODEL_NAMES)
@@ -255,11 +276,15 @@ if __name__ == "__main__":
     ] + list(differing_keys)
     new_df, RESULTS_FILE = initialize_results_df(columns)
     all_models_results_df = load_results_models()
-    problem, _, _ = init_pb(cfg, coords, demands, capacities)
-    init_x = problem.generate_init_state(cfg["INIT"])
+    problem = init_pb(
+        cfg,
+        coords,
+        demands,
+        capacities,
+    )
+    init_x = problem.generate_init_state(cfg["INIT"], False)
     init_cost = torch.mean(problem.cost(init_x))
     logger.info(f"CVRP problem initialized. Initial cost: {init_cost:.4f}")
-
     for model_name in tqdm(MODEL_NAMES, desc="Processing models"):
 
         (
@@ -270,7 +295,8 @@ if __name__ == "__main__":
             execution_time_baseline,
             step,
             step_baseline,
-        ) = perform_test(model_name, problem, init_x)
+        ) = perform_test(model_name, problem, init_x, cfg["BASELINE"])
+
         # Extract HP values for the current model
         hp_values = add_hp_to_results(model_name, differing_keys)
         # Add results to DataFrame

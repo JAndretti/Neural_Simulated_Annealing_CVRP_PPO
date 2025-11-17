@@ -25,7 +25,7 @@ from utils import plot_vehicle_routes, prepare_plot, is_feasible
 
 # --- Configurations ---
 
-MODEL_NAME = "20250917_141217_ilskb4ow"
+MODEL_NAME = "20251111_200858_pt2vxf8k"
 MODEL_DIR = glob(
     os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL_NAME)
 )[0]
@@ -161,11 +161,19 @@ def main():
         params=CFG,
     )
     problem.manual_seed(SEED)
-    problem, init_x, initial_cost = init_pb(CFG)
+    PATH_DATA = f"generated_nazari_problem/gen_nazari_{cfg['PROBLEM_DIM']}.pt"
+    bdd = torch.load(PATH_DATA, map_location="cpu")
+    coords = bdd["node_coords"][0]
+    demands = bdd["demands"][0]
+    capacities = bdd["capacity"][0]
+    problem = init_pb(
+        CFG, coords.unsqueeze(0), demands.unsqueeze(0), capacities.unsqueeze(0)
+    )
+    init_x = problem.generate_init_state(CFG["INIT"])
     problem.set_heuristic(CFG["HEURISTIC"])
 
     # Initialize actor
-    if CFG["PAIRS"]:
+    if CFG["MODEL"] == "pairs":
         actor = CVRPActorPairs(
             CFG["EMBEDDING_DIM"],
             num_hidden_layers=CFG["NUM_H_LAYERS"],

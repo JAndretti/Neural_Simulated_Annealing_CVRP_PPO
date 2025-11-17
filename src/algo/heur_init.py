@@ -174,79 +174,81 @@ def random_init_batch(cvrp_instance) -> torch.Tensor:
         Tensor of shape [batch_size, max_route_length, 1] containing initial routes
         with depot visits inserted to respect capacity constraints
     """
-    demands = cvrp_instance.demands.cpu()  # Ensure demands are on CPU
-    capacity = cvrp_instance.capacity.squeeze(-1).cpu()  # Ensure capacity is a scalar
+    demands = cvrp_instance.demands  # Ensure demands are on CPU
+    capacity = cvrp_instance.capacity.squeeze(-1)  # Ensure capacity is a scalar
     batch_size, num_nodes = demands.size()
     device = demands.device
 
     # Initialize solution tensor with 40% padding for depot insertions
-    max_route_length = num_nodes + int(num_nodes * MULT)
-    routes = torch.zeros(batch_size, max_route_length, dtype=torch.long, device=device)
 
     # Prepare client indices (excluding depot 0)
     clients = torch.arange(1, num_nodes, device=device)
     clients = clients.repeat(batch_size, 1)  # [batch_size, num_nodes-1]
 
     # Shuffle clients differently for each problem in batch
-    clients = torch.stack([row[torch.randperm(row.size(0))] for row in clients])
+    rand_floats = torch.rand_like(clients, dtype=torch.float)
+    indices = torch.argsort(rand_floats, dim=1)
+    clients = torch.gather(clients, 1, indices)
 
-    # Add depot (0) at start of each route
-    clients = torch.cat(
-        [
-            torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=device),
-            clients,
-        ],
-        dim=1,
-    )
+    return construct_cvrp_solution(clients, demands, capacity)
 
-    # Initialize tracking variables
-    remaining_capacity = capacity
-    route_positions = torch.zeros(batch_size, dtype=torch.long, device=device)
-    vehicle_count = torch.ones(batch_size, device=device)
+    # # Add depot (0) at start of each route
+    # clients = torch.cat(
+    #     [
+    #         torch.zeros(clients.size(0), 1, dtype=clients.dtype, device=device),
+    #         clients,
+    #     ],
+    #     dim=1,
+    # )
 
-    # Build routes by sequentially assigning clients
-    while (clients >= 0).any():  # While clients remain unassigned
-        current_client = clients[:, 0]
+    # # Initialize tracking variables
+    # remaining_capacity = capacity
+    # route_positions = torch.zeros(batch_size, dtype=torch.long, device=device)
+    # vehicle_count = torch.ones(batch_size, device=device)
 
-        # Check if client demand can be satisfied with current capacity
-        can_serve = (
-            demands[torch.arange(batch_size), current_client] <= remaining_capacity
-        )
+    # # Build routes by sequentially assigning clients
+    # while (clients >= 0).any():  # While clients remain unassigned
+    #     current_client = clients[:, 0]
 
-        # Update route with client or depot (0)
-        routes[torch.arange(batch_size), route_positions] = torch.where(
-            can_serve, current_client, 0
-        )
-        route_positions += 1
+    #     # Check if client demand can be satisfied with current capacity
+    #     can_serve = (
+    #         demands[torch.arange(batch_size), current_client] <= remaining_capacity
+    #     )
 
-        # Update remaining capacity
-        remaining_capacity = torch.where(
-            can_serve,
-            remaining_capacity - demands[torch.arange(batch_size), current_client],
-            remaining_capacity,
-        )
+    #     # Update route with client or depot (0)
+    #     routes[torch.arange(batch_size), route_positions] = torch.where(
+    #         can_serve, current_client, 0
+    #     )
+    #     route_positions += 1
 
-        # If can't serve, return to depot and dispatch new vehicle
-        remaining_capacity = torch.where(can_serve, remaining_capacity, capacity)
-        vehicle_count = torch.where(can_serve, vehicle_count, vehicle_count + 1)
+    #     # Update remaining capacity
+    #     remaining_capacity = torch.where(
+    #         can_serve,
+    #         remaining_capacity - demands[torch.arange(batch_size), current_client],
+    #         remaining_capacity,
+    #     )
 
-        # Remove assigned client from consideration
-        clients = torch.where(
-            can_serve.unsqueeze(1),
-            torch.cat(
-                [
-                    clients[:, 1:],
-                    torch.full((batch_size, 1), -1, device=clients.device),
-                ],
-                dim=1,
-            ),
-            clients,
-        )
+    #     # If can't serve, return to depot and dispatch new vehicle
+    #     remaining_capacity = torch.where(can_serve, remaining_capacity, capacity)
+    #     vehicle_count = torch.where(can_serve, vehicle_count, vehicle_count + 1)
 
-    # Ensure all negative values (padding) are set to depot (0)
-    routes = torch.where(routes < 0, torch.tensor(0, device=routes.device), routes)
+    #     # Remove assigned client from consideration
+    #     clients = torch.where(
+    #         can_serve.unsqueeze(1),
+    #         torch.cat(
+    #             [
+    #                 clients[:, 1:],
+    #                 torch.full((batch_size, 1), -1, device=clients.device),
+    #             ],
+    #             dim=1,
+    #         ),
+    #         clients,
+    #     )
 
-    return routes.unsqueeze(-1)  # Add dimension for compatibility
+    # # Ensure all negative values (padding) are set to depot (0)
+    # routes = torch.where(routes < 0, torch.tensor(0, device=routes.device), routes)
+
+    # return routes.unsqueeze(-1)  # Add dimension for compatibility
 
 
 def _vrp_optimal_split_worker(args):

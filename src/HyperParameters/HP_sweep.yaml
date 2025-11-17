@@ -1,15 +1,8 @@
 # =============== Hyperparameter Sweep ===============
 LOG: 
-- True 
+- True  
 
-TEST_INIT:
-- "sweep"
-- "random"
-
-EMBEDDING_DIM: 
-- 32 
-- 64
-
-NUM_H_LAYERS: 
-- 1
-- 2
+UPDATE_METHOD:
+- "valid"
+- "free"
+- "rm_depot"

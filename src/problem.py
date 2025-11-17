@@ -480,15 +480,17 @@ class CVRP(Problem):
         """
         return torch.gather(self.demands, 1, solution.squeeze(-1))
 
-    def generate_init_state(self, param: str = None) -> torch.Tensor:
+    def generate_init_state(
+        self, init_heuristic: str = None, multi_init: bool = False
+    ) -> torch.Tensor:
         """
         Generate initial solutions using specified algorithm or multiple methods
         if MULTI_INIT is enabled.
         """
-        if param is not None:
-            self.params["INIT"] = param
+        # if param is not None:
+        #     self.params["INIT"] = param
 
-        if self.params.get("MULTI_INIT", False):
+        if multi_init:
             split_size = self.n_problems // len(self.params["INIT_LIST"])
             solutions = []
             for i, method in enumerate(self.params["INIT_LIST"]):
@@ -503,11 +505,10 @@ class CVRP(Problem):
             ]
             sol = torch.cat(solutions_padded, dim=0)
         else:
-            method = self.params["INIT"]
-            if method not in init_methods:
-                raise ValueError(f"Unsupported initialization method: {method}")
+            if init_heuristic not in init_methods:
+                raise ValueError(f"Unsupported initialization method: {init_heuristic}")
 
-            sol = init_methods[method](self).to(self.device)
+            sol = init_methods[init_heuristic](self).to(self.device)
         self.ordered_demands = self.get_demands(sol)
         valid = is_feasible(sol, self.ordered_demands, self.capacity).all()
         if not valid:

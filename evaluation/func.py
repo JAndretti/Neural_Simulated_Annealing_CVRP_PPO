@@ -77,31 +77,28 @@ def load_model(model: torch.nn.Module, folder: str, special_key: str = None):
 
 def init_pb(
     cfg: dict,
-    coords: torch.Tensor = None,
-    demands: torch.Tensor = None,
-    capacities: torch.Tensor = None,
+    coords: torch.Tensor,
+    demands: torch.Tensor,
+    capacities: torch.Tensor,
 ):
     """Initialize the CVRP problem and generate initial solutions."""
     logger.info("Initializing CVRP problem...")
-    if not cfg["LOAD_PB"]:
-        capacities = None
+
     problem = CVRP(
         cfg["PROBLEM_DIM"],
         cfg["N_PROBLEMS"],
-        capacities[: cfg["N_PROBLEMS"]] if capacities is not None else cfg["MAX_LOAD"],
+        capacities,
         device=cfg["DEVICE"],
         params=cfg,
     )
     problem.manual_seed(cfg["SEED"])
     problem.generate_params(
-        "test",
-        cfg["LOAD_PB"],
-        coords[: cfg["N_PROBLEMS"]],
-        demands[: cfg["N_PROBLEMS"]],
+        mode="test",
+        pb=True,
+        coords=coords,
+        demands=demands,
     )
-    init_x = problem.generate_init_state(cfg["INIT"])
-    initial_cost = torch.mean(problem.cost(init_x))
-    return problem, init_x, initial_cost
+    return problem
 
 
 def plot_cvrp_solution(

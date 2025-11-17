@@ -27,22 +27,29 @@ profiling/
 # Res files
 /res/**
 !/res/Vrp-Set-XML100_res.csv
-!/res/*.png
 
-# Generated problem files
-/generated_problem/**
-generated_uchoa_problem/bdd_generated/*
-!/generated_problem/*.py
-!/generated_problem/scripts_gen/
-!/generated_problem/gen50.pt
-!/generated_problem/gen100.pt
-!/generated_problem/scripts_gen/generate_sh.py
-!/generated_problem/or_tools_gen*.csv
-!/generated_problem/*.zip
-!/generated_problem/README.md
+# Generated problem file
+generated_nazari_problem/**
+!/generated_nazari_problem/README.md
+!/generated_nazari_problem/*.py
+!/generated_nazari_problem/gen_nazari_10.pt
+!/generated_nazari_problem/gen_nazari_20.pt
+!/generated_nazari_problem/gen_nazari_50.pt
+!/generated_nazari_problem/gen_nazari_100.pt
+
+
+/generated_uchoa_problem/**
+!/generated_uchoa_problem/README.md
+!/generated_uchoa_problem/*.py
+!generated_uchoa_problem/scripts_gen/
+!generated_uchoa_problem/scripts_gen/*.py
+!/generated_uchoa_problem/gen_uchoa_10.pt
+!/generated_uchoa_problem/gen_uchoa_20.pt
+!/generated_uchoa_problem/gen_uchoa_50.pt
+!/generated_uchoa_problem/gen_uchoa_100.pt
+
 
 # BDD files
 bdd/*
 !bdd/README.md
 !bdd/generate_csv_data.py
-res/boxplot_comparison.png

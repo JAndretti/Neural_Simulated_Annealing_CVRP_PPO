@@ -49,9 +49,9 @@ def calculate_dist_route(route, distance_matrix):
 if __name__ == "__main__":
 
     cfg = {
-        "OR_TOOLS_TIME": 60,  # Time limit in seconds
+        "OR_TOOLS_TIME": 30,  # Time limit in seconds
     }
-    logger.info(f"Or-Tools solver configuration: {cfg}")
+    logger.info(f"Or-Tools solver configuration: {cfg['OR_TOOLS_TIME']}")
 
     path_opt_cost = "bdd/Vrp-Set-XML100/solutions/"
     instances = glob2.glob("bdd/Vrp-Set-XML100/instances/*.vrp")
@@ -138,29 +138,3 @@ if __name__ == "__main__":
         "Number of times or_tools_cost < opt_sol: "
         f"{(df['or_tools_cost'] < df['opt_sol']).sum()}"
     )
-    # # Filter rows where or_tools_cost < opt_sol
-    # filtered_df = df[df["or_tools_cost"] < df["opt_sol"]]
-
-    # # Create a new DataFrame with the required columns
-    # filtered_data = pd.DataFrame(
-    #     {
-    #         "name": filtered_df["name"],
-    #         "or_tools_cost": filtered_df["or_tools_cost"],
-    #         "opt_sol": filtered_df["opt_sol"],
-    #         "or_tools_solution": [
-    #             solutions[names.index(name)] for name in filtered_df["name"]
-    #         ],
-    #         "opt_routes": [
-    #             opt_routes[names.index(name)] for name in filtered_df["name"]
-    #         ],
-    #         "distance_matrix": [
-    #             matrixes[names.index(name)] for name in filtered_df["name"]
-    #         ],
-    #     }
-    # )
-    # # Save the filtered data to a CSV file
-    # filtered_output_path =
-    # f"res/Vrp-Set-XML100_filtered_res_{cfg['OR_TOOLS_TIME']}.csv"
-    # filtered_data.to_csv(filtered_output_path, index=False)
-
-    # logger.info(f"Filtered results saved to {filtered_output_path}")

@@ -22,29 +22,25 @@ def scale_to_unit(value: float, min_value: float, max_value: float) -> float:
     return (value - min_value) / (max_value - min_value)
 
 
-def scale_positive_negative(tensor):
+def normalize(actual_improvement, initial_cost) -> torch.Tensor:
     """
-    Scale positive values between 0 and 1 and negative values between -1 and 0.
-
+    Scale the improvement to a reward signal in [-1, 1] based on expected max
+    improvement.
     Args:
-        tensor (torch.Tensor): Input tensor to scale.
-
+        actual_improvement: The actual improvement achieved
+        initial_cost: The initial cost before improvement
     Returns:
-        torch.Tensor: Scaled tensor.
+        Scaled and clamped reward tensor
     """
-    # Separate positive and negative parts
-    positive_part = torch.clamp(tensor, min=0)
-    negative_part = torch.clamp(tensor, max=0)
+    MAX_EXPECTED_REL_IMPROVEMENT = 0.2
 
-    # Scale positive values
-    if positive_part.max() > 0:
-        positive_part = positive_part / positive_part.max()
+    # Calculate relative improvement
+    relative_improvement = actual_improvement / initial_cost
 
-    # Scale negative values
-    if negative_part.min() < 0:
-        negative_part = negative_part / abs(negative_part.min())
-
-    return positive_part + negative_part
+    # Scale and clamp with your fixed limit
+    scaled_reward = relative_improvement / MAX_EXPECTED_REL_IMPROVEMENT
+    clamped_reward = torch.clamp(scaled_reward, -1.0, 1.0)
+    return clamped_reward
 
 
 # ================================
@@ -307,8 +303,15 @@ def calculate_reward(
         pass
 
     elif config["REWARD"] == "immediate":
-        reward_signal = (actual_improvement / initial_cost).view(-1, 1)
-
+        reward_signal = torch.where(
+            ~is_valid.bool().squeeze(-1),
+            -1.5,
+            torch.where(
+                actual_improvement == 0,
+                0.0,
+                normalize(actual_improvement, initial_cost),
+            ),
+        ).view(-1, 1)
     elif config["REWARD"] == "min_cost":
         reward_signal = ((initial_cost + best_cost) / initial_cost).view(-1, 1)
 
@@ -323,7 +326,7 @@ def calculate_reward(
             (initial_cost - best_cost) / initial_cost
         ).view(-1, 1)
     if config["NORMALIZE_REWARD"]:
-        reward_signal = scale_positive_negative(reward_signal)
+        reward_signal = normalize(actual_improvement, initial_cost)
 
     return reward_signal
 
@@ -537,8 +540,6 @@ def sa_train(
                 opt_state["initial_cost"],
                 step + 1 == config["OUTER_STEPS"],
             )
-            # Scale the reward signal based on the current step to outer steps ratio
-            # tracking["reward_signal"] *= max(0.3, step / config["OUTER_STEPS"])
 
             # Store experience in replay buffer
             if replay_buffer is not None:
