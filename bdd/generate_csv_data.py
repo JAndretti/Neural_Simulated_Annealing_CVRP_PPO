@@ -3,6 +3,7 @@ import sys
 import glob2
 import vrplib
 import pandas as pd
+import argparse
 
 # Add src directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -48,8 +49,16 @@ def calculate_dist_route(route, distance_matrix):
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--or_tools_time",
+        type=int,
+        default=30,
+        help="Time limit for the OR-Tools solver in seconds.",
+    )
+    args = parser.parse_args()
     cfg = {
-        "OR_TOOLS_TIME": 30,  # Time limit in seconds
+        "OR_TOOLS_TIME": args.or_tools_time,  # Time limit in seconds
     }
     logger.info(f"Or-Tools solver configuration: {cfg['OR_TOOLS_TIME']}")
 
