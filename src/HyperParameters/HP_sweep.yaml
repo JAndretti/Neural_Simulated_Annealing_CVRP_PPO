@@ -6,3 +6,9 @@ UPDATE_METHOD:
 - "valid"
 - "free"
 - "rm_depot"
+
+INIT:
+- "random"
+- "sweep"
+- "isolate"
+- "nearest_neighbor"

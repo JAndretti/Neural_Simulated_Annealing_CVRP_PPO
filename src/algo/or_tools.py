@@ -216,9 +216,7 @@ def or_tools(params, cfg, mult_thread=False):
         )
     ]
     logger.info(f"Number of instances to solve: {len(args_list)}")
-    num_cores = min(
-        os.cpu_count(), len(args_list)
-    )  # max utile selon machine + taille du batch
+    num_cores = min(15, os.cpu_count(), len(args_list))
     logger.info(f"Number of cores used for parallel processing: {num_cores}")
     if mult_thread:
         with multiprocessing.Pool(processes=num_cores) as pool:

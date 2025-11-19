@@ -1,6 +1,6 @@
 # =============== Project & Logging ===============
 PROJECT: "Neural_Simulated_Annealing"  # Project name
-GROUP: "DATA_source"              # Experimentation group
+GROUP: "UPDATE_and_INIT"              # Experimentation group
 LOG: False                             # Enable or disable logging with WandB
 VERBOSE: False                          # Verbose output during training
 
@@ -19,7 +19,7 @@ HEURISTIC: ["insertion"]                 # Local search method (insertion, swap,
 
 UPDATE_METHOD: "valid"                  # Update method after heuristic
 INIT: "random"                        # Initial solution method
-MULTI_INIT: True                       # Use multiple initial solutions
+MULTI_INIT: False                       # Use multiple initial solutions
 INIT_LIST: ["isolate","random", "sweep"] # List of initial solution methods
 
 # =============== Reward ===============
