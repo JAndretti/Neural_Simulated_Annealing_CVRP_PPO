@@ -313,14 +313,20 @@ def test_model(
 def setup_device_and_logging(config: Dict[str, Any]) -> str:
     """
     Configure compute device and logging based on availability.
-
     Args:
         config: Configuration dictionary
-
     Returns:
         Selected device string ('cuda', 'mps', or 'cpu')
     """
     device = config["DEVICE"]
+
+    # --- DEBUT MODIFICATION ---
+    # Si l'argument --GPU a été passé, on le récupère dans la config
+    # et on modifie la chaîne device (ex: "cuda" devient "cuda:1")
+    gpu_id = config.get("GPU")
+    if gpu_id is not None and "cuda" in device:
+        device = f"cuda:{gpu_id}"
+    # --- FIN MODIFICATION ---
 
     # CUDA device configuration
     if "cuda" in device:
@@ -331,7 +337,11 @@ def setup_device_and_logging(config: Dict[str, Any]) -> str:
             os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
             torch.cuda.empty_cache()
             torch.backends.cudnn.benchmark = True
-            logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+
+            # Petit ajustement pour le log pour afficher le bon device
+            # On extrait l'index (si 'cuda:1', index=1, sinon 0 par défaut)
+            idx = int(gpu_id) if gpu_id is not None else 0
+            logger.info(f"Using CUDA device: {torch.cuda.get_device_name(idx)}")
 
     # Apple Metal Performance Shaders (MPS) configuration
     elif "mps" in device and not torch.backends.mps.is_available():
