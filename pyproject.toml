@@ -26,7 +26,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "vrplib>=1.5.1",
     "wandb>=0.19.9",
-    "torch>=2.3.0", # Compatible with CUDA 12.8
+    "torch==2.8.0", # Compatible with CUDA 12.8
     "torchvision>=0.18.0",
     "torchaudio>=2.3.0",
     "torch-geometric>=2.6.1",

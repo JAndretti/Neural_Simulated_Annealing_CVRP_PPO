@@ -21,7 +21,7 @@ logger.add(
 # ----------------------------------------------------
 # Global Parameters
 # ----------------------------------------------------
-GPU_AVAILABLES = [0]
+GPU_AVAILABLES = [0, 1, 2, 3]
 
 SWEEP_MODE = "random"  # grid, random
 
