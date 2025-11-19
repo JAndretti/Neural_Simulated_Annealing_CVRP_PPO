@@ -66,7 +66,7 @@ def run_training_script(gpu_id, hyperparameter_names, hyperparameter_values):
 
     """
 
-    cmd_str = f"python3 {TRAINING_SCRIPT_PATH} --GPU {gpu_id}"
+    cmd_str = f"CUDA_VISIBLE_DEVICES={gpu_id} python3 {TRAINING_SCRIPT_PATH}"
 
     for hp_name, hp_val in zip(hyperparameter_names, hyperparameter_values):
         cmd_str += f" --{hp_name} {hp_val}"
