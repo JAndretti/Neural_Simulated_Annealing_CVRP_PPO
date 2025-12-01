@@ -259,7 +259,9 @@ class CVRP(Problem):
         self.heuristic = None
         self.heuristic_1 = None
         self.heuristic_2 = None
-        if isinstance(heuristic, list):
+        if isinstance(heuristic, (list, str)):
+            if isinstance(heuristic, str):
+                heuristic = [heuristic]
             heuristics = {
                 "swap": swap,
                 "two_opt": two_opt,
@@ -277,7 +279,7 @@ class CVRP(Problem):
             else:
                 raise ValueError("Only up to 2 heuristics are supported.")
         else:
-            raise ValueError("Heuristic must be provided as a list.")
+            raise ValueError("Heuristic must be provided as a list or str.")
 
     def apply_heuristic(
         self, solution: torch.Tensor, action: torch.Tensor

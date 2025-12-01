@@ -25,7 +25,7 @@ from utils import plot_vehicle_routes, prepare_plot, is_feasible
 
 # --- Configurations ---
 
-MODEL_NAME = "20251111_200858_pt2vxf8k"
+MODEL_NAME = "20251121_114610_3n73ugy5"
 MODEL_DIR = glob(
     os.path.join("wandb", "Neural_Simulated_Annealing", "*", "models", MODEL_NAME)
 )[0]
@@ -257,7 +257,8 @@ def main():
     # Configure OR-Tools parameters
     or_tools_cfg = {
         "OR_TOOLS_TIME": int(
-            execution_time + 0.999
+            # execution_time + 0.999
+            1
         ),  # Time limit in seconds rounded up
     }
     params = {
@@ -273,7 +274,7 @@ def main():
     )
     or_tools_solution = test_or_tools(params, or_tools_cfg)
     if or_tools_solution is not None:
-        or_tools_cost = problem.cost(or_tools_solution)
+        or_tools_cost = problem.cost(or_tools_solution.to(CFG["DEVICE"]))
         or_tools_sol = or_tools_solution[0, :, 0].cpu().numpy()
         print(f"OR-Tools cost: {or_tools_cost.item():.4f}")
     else:

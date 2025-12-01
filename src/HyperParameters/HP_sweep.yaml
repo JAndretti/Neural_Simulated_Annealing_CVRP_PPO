@@ -2,13 +2,11 @@
 LOG: 
 - True  
 
-UPDATE_METHOD:
-- "valid"
-- "free"
-- "rm_depot"
+HEURISTIC: 
+- 'swap'                 # Local search method (insertion, swap, two_opt)
+- 'insertion'                # Local search method (insertion, swap, two_opt)
+- 'two_opt'                 # Local search method (insertion, swap, two_opt)
 
-INIT:
-- "random"
-- "sweep"
-- "isolate"
-- "nearest_neighbor"
+UPDATE_METHOD:
+- 'free'                  # Update method after heuristic
+- 'rm_depot'

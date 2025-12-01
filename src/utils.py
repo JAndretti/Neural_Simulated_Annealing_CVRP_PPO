@@ -64,11 +64,11 @@ def discrete_cmap(N, base_cmap=None):
 
 
 def prepare_plot(pb, init):
-    depot = pb.coords[:, 0, :].squeeze()
-    loc = pb.coords[:, 1:, :].squeeze()
-    demand = pb.demands[:, 1:].squeeze()
+    depot = pb.coords[:, 0, :].squeeze().cpu()
+    loc = pb.coords[:, 1:, :].squeeze().cpu()
+    demand = pb.demands[:, 1:].squeeze().cpu()
     data = {"depot": depot, "loc": loc, "demand": demand}
-    init = init.squeeze()
+    init = init.squeeze().cpu()
     return data, init
 
 

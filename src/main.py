@@ -408,7 +408,7 @@ def initialize_test_problem(
         capacities = test_data["capacity"][:n_test_problems].to(device)
 
     else:
-        problem_path = f"generated_problem/gen_uchoa_{test_dim}.pt"
+        problem_path = f"generated_uchoa_problem/gen_uchoa_{test_dim}.pt"
         try:
             test_data = torch.load(problem_path, map_location="cpu")
             logger.info(f"Loaded test data from: {problem_path}")
@@ -472,6 +472,8 @@ def initialize_models(
         Tuple of (actor_model, critic_model)
     """
     # Determine if mixed heuristic is used
+    if isinstance(config["HEURISTIC"], str):
+        config["HEURISTIC"] = [config["HEURISTIC"]]
     use_mixed_heuristic = len(config["HEURISTIC"]) > 1
 
     # Initialize actor model (with or without pairs)
@@ -673,7 +675,7 @@ def main(config: Dict[str, Any]) -> None:
                 )
 
             # Trigger early stopping if no improvement for too long
-            if early_stopping_counter > 15:
+            if early_stopping_counter > 10:
                 logger.warning(
                     f"Early stopping triggered at epoch {epoch} "
                     f"with loss {best_loss_value:.4f}"

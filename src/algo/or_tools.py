@@ -165,7 +165,10 @@ def solve_w_ortools(coord, distance_matrix, demand, or_tools_time, max_load, dim
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
     if or_tools_time > 0:
-        search_parameters.time_limit.FromSeconds(or_tools_time)
+        seconds = int(or_tools_time)
+        nanos = int((or_tools_time - seconds) * 1e9)
+        search_parameters.time_limit.seconds = seconds
+        search_parameters.time_limit.nanos = nanos
 
     # Solve the problem.
     solution = routing.SolveWithParameters(search_parameters)
@@ -216,7 +219,7 @@ def or_tools(params, cfg, mult_thread=False):
         )
     ]
     logger.info(f"Number of instances to solve: {len(args_list)}")
-    num_cores = min(15, os.cpu_count(), len(args_list))
+    num_cores = min(50, os.cpu_count(), len(args_list))
     logger.info(f"Number of cores used for parallel processing: {num_cores}")
     if mult_thread:
         with multiprocessing.Pool(processes=num_cores) as pool:

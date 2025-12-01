@@ -16,7 +16,7 @@ from func import (
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from sa import sa_train
+from sa import sa_train, sa_test
 from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 from loguru import logger  # Enhanced logging capabilities
@@ -58,9 +58,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "--OUTER_STEPS",
-    default=1000,
+    default=10000,
     type=int,
-    help="Number of outer steps for the algorithm",
+    help="Number of SA steps for the algorithm",
 )
 parser.add_argument(
     "--DATA",
@@ -70,17 +70,25 @@ parser.add_argument(
     help="Dataset to use",
 )
 parser.add_argument(
-    "--BASELINE",
-    default=True,
-    type=bool,
-    help="Use baseline for comparison",
+    "--no-baseline",
+    dest="BASELINE",  # Store the result in the BASELINE variable
+    action="store_false",  # If the argument is present, store False
+    default=True,  # Otherwise, the default value is True
+    help="Disable the baseline",
 )
-
+parser.add_argument(
+    "--greedy",
+    dest="GREEDY",  # Store the result in the GREEDY variable
+    action="store_true",  # If the argument is present, store True
+    default=False,  # Otherwise, the default value is False
+    help="Enable greedy mode",
+)
+args = parser.parse_args()
 # Configuration
 cfg = {
-    "PROBLEM_DIM": parser.parse_args().dim,
-    "N_PROBLEMS": 1000,
-    "OUTER_STEPS": parser.parse_args().OUTER_STEPS,
+    "PROBLEM_DIM": args.dim,
+    "N_PROBLEMS": 10000,
+    "OUTER_STEPS": args.OUTER_STEPS,
     "DEVICE": (
         "cuda"
         if torch.cuda.is_available()
@@ -88,14 +96,15 @@ cfg = {
     ),
     "SEED": 0,
     "LOAD_PB": True,
-    "INIT": parser.parse_args().INIT,
+    "INIT": args.INIT,
     "MULTI_INIT": False,
-    "DATA": parser.parse_args().DATA,
-    "BASELINE": parser.parse_args().BASELINE,
+    "DATA": args.DATA,
+    "BASELINE": args.BASELINE,
+    "GREEDY": args.GREEDY,
 }
 set_seed(cfg["SEED"])
 # PATH and FOLDER setup
-FOLDER = parser.parse_args().FOLDER
+FOLDER = args.FOLDER
 BASE_PATH = "res/" + FOLDER + "/"
 if not os.path.exists(BASE_PATH):
     os.makedirs(BASE_PATH, exist_ok=True)
@@ -208,14 +217,14 @@ def perform_test(
     # Run simulated annealing with time measurement
     start_time = time.time()
 
-    test = sa_train(
+    test = sa_test(
         actor,
         problem,
         init_x,
         HP,
-        replay_buffer=None,
+        # replay_buffer=None,
         baseline=False,
-        greedy=False,
+        greedy=HP["GREEDY"],
         desc_tqdm="NSA Model",
     )
     execution_time = time.time() - start_time
@@ -226,12 +235,12 @@ def perform_test(
         HP["OUTER_STEPS"] *= 20
         step_baseline = HP["OUTER_STEPS"]
         start_time = time.time()
-        test_baseline = sa_train(
+        test_baseline = sa_test(
             actor,
             problem,
             init_x,
             HP,
-            replay_buffer=None,
+            # replay_buffer=None,
             baseline=True,
             greedy=False,
             desc_tqdm="SA Baseline",
@@ -240,9 +249,9 @@ def perform_test(
         HP["OUTER_STEPS"] = step
         final_cost_baseline = torch.mean(test_baseline["min_cost"])
     else:
-        final_cost_baseline = None
-        execution_time_baseline = None
-        step_baseline = None
+        final_cost_baseline = torch.tensor(float("nan"))
+        execution_time_baseline = torch.tensor(float("nan"))
+        step_baseline = torch.tensor(float("nan"))
         step = HP["OUTER_STEPS"]
     # Clear CUDA cache if using GPU
     if cfg["DEVICE"] == "cuda":
@@ -266,6 +275,7 @@ if __name__ == "__main__":
     # Initialize results DataFrame with dynamic columns
     columns = [
         "model",
+        "test_data",
         "initial_cost",
         "final_cost",
         "final_cost_baseline",
@@ -306,6 +316,7 @@ if __name__ == "__main__":
                 pd.DataFrame(
                     {
                         "model": [model_name.split("/")[-1]],
+                        "test_data": [cfg["DATA"]],
                         "initial_cost": [init_cost.item()],
                         "final_cost": [final_cost.item()],
                         "final_cost_baseline": [final_cost_baseline.item()],

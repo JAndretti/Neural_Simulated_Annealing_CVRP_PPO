@@ -53,3 +53,7 @@ generated_nazari_problem/**
 bdd/*
 !bdd/README.md
 !bdd/generate_csv_data.py
+
+test_gpu.py
+cloud_gpu.txt
+

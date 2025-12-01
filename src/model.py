@@ -217,11 +217,11 @@ class CVRPActorPairs(SAModel):
                 )
             else:
                 action = torch.stack([idx1[c], idx2[c]], dim=-1)
-
-        return action, log_probs[..., 0]
+        mask = torch.ones_like(logits, dtype=torch.bool)
+        return action, log_probs[..., 0], mask
 
     def evaluate(
-        self, state: torch.Tensor, action: torch.Tensor, **kwargs
+        self, state: torch.Tensor, action: torch.Tensor, mask: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         """Evaluate log probabilities of given actions."""
         pair_features, idx1, idx2 = self._prepare_features_and_pairs(state)
@@ -240,7 +240,20 @@ class CVRPActorPairs(SAModel):
             action_idx = action_idx.nonzero(as_tuple=True)[1]
 
         # Forward pass
-        logits = self.forward(pair_features)[..., 0]
+        step = 1000
+        if state.shape[0] * state.shape[1] > 1000 * 161:
+            logits_list = []
+            for i in range(0, state.shape[0], step):
+                chunk = state[i : i + step]
+                pair_features, idx1, idx2 = self._prepare_features_and_pairs(chunk)
+                logits = self.forward(pair_features)[..., 0]  # Forward pass
+                logits_list.append(logits)
+                del pair_features, logits
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            logits = torch.cat(logits_list, dim=0)
+        else:
+            logits = self.forward(pair_features)[..., 0]
 
         # Compute action probabilities
         probs = torch.softmax(logits, dim=-1)
