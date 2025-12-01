@@ -1,4 +1,4 @@
-# NSA_CVRP_PPO: Neural Simulated Annealing for Capacitated Vehicle Routing with PPO
+# Learning-Guided Simulated Annealing for the Capacitated Vehicle Routing 
 
 A reinforcement learning approach combining Proximal Policy Optimization (PPO) with Simulated Annealing (SA) to solve Capacitated Vehicle Routing Problems (CVRP).
 
@@ -233,11 +233,3 @@ The project integrates with Weights & Biases to track:
 - Gradient statistics
 - Temperature scheduling
 - Model checkpoints
-
-
-## 📚 References
-
-- Schulman et al. "Proximal Policy Optimization Algorithms" (2017)  
-- Alvaro H.C. Correia et al. "[Neural Simulated Annealing](https://github.com/Qualcomm-AI-research/neural-simulated-annealing.git)" (2023) 
-- Uchoa et al. (2017): New benchmark instances for the Capacitated Vehicle Routing Problem. European Journal of Operational Research.  
-- Queiroga, Eduardo, et al. (2022): 10,000 optimal CVRP solutions for testing machine learning-based heuristics.  
