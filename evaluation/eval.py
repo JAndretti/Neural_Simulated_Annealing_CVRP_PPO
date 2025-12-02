@@ -16,7 +16,7 @@ from func import (
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-from sa import sa_train, sa_test
+from sa import sa_test
 from model import CVRPActorPairs, CVRPActor
 from tqdm import tqdm
 from loguru import logger  # Enhanced logging capabilities

@@ -57,3 +57,5 @@ bdd/*
 test_gpu.py
 cloud_gpu.txt
 
+**.log
+**.ipynb
